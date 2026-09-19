@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>들녘의 하루 - 현실 농사 시뮬레이션</title>
+  <title>엄청난 농장 운영해서 부자되기 - 현실 농사 시뮬레이션</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -12,7 +12,7 @@
       <div class="brand-block">
         <div class="brand-mark">🌱</div>
         <div>
-          <h1>들녘의 하루</h1>
+          <h1>엄청난 농장 운영해서 부자되기</h1>
           <p>현실 농사 시뮬레이션 · 프로토타입</p>
         </div>
       </div>
@@ -22,15 +22,18 @@
           <span class="stat-label">소지금</span>
           <strong id="money">₩0</strong>
         </div>
+
         <div class="stat-card">
           <span class="stat-label">날짜</span>
           <strong id="game-date">1일</strong>
         </div>
+
         <div class="stat-card weather-card">
           <span class="stat-label">날씨</span>
           <strong id="weather">맑음</strong>
           <small id="temperature">20°C</small>
         </div>
+
         <div class="stat-card">
           <span class="stat-label">시간</span>
           <strong id="game-time">06:00</strong>
@@ -39,6 +42,7 @@
 
       <div class="header-actions">
         <button id="inventory-btn" class="wood-btn">🎒 인벤토리</button>
+        <button id="help-btn" class="wood-btn">❔ 사용법</button>
         <button id="save-btn" class="wood-btn">💾 저장</button>
         <button id="reset-btn" class="wood-btn danger-btn">↻ 새 게임</button>
       </div>
@@ -51,6 +55,7 @@
             <span class="eyebrow">FARM FIELD</span>
             <h2>내 밭</h2>
           </div>
+
           <div class="global-status">
             <span>현재 행동</span>
             <strong id="selected-tool-label">밭칸을 선택하세요</strong>
@@ -69,7 +74,9 @@
 
         <div class="tip-strip">
           <span class="tip-icon">💡</span>
-          <span>밭을 클릭하면 파종·물주기·잡초 제거·농약·비료·수확 메뉴가 나타납니다.</span>
+          <span>
+            밭을 클릭하면 파종·물주기·잡초 제거·농약·비료·수확 메뉴가 나타납니다.
+          </span>
         </div>
       </section>
 
@@ -80,6 +87,7 @@
               <span class="eyebrow">MARKET</span>
               <h2>농자재 상점</h2>
             </div>
+
             <div class="market-tabs">
               <button class="tab-btn active" data-tab="buy">구매</button>
               <button class="tab-btn" data-tab="sell">판매</button>
@@ -97,31 +105,150 @@
               <h2>밭 현황</h2>
             </div>
           </div>
+
           <div id="field-summary" class="field-summary"></div>
         </section>
       </aside>
     </main>
   </div>
 
+  <!-- 밭 상세 모달 -->
   <div id="cell-modal" class="modal hidden" aria-hidden="true">
     <div class="modal-backdrop" data-close-modal></div>
-    <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-      <button class="modal-close" data-close-modal aria-label="닫기">×</button>
+
+    <div
+      class="modal-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="modal-title"
+    >
+      <button
+        class="modal-close"
+        data-close-modal
+        aria-label="닫기"
+      >
+        ×
+      </button>
+
       <div id="cell-modal-content"></div>
     </div>
   </div>
 
+  <!-- 인벤토리 모달 -->
   <div id="inventory-modal" class="modal hidden" aria-hidden="true">
     <div class="modal-backdrop" data-close-inventory></div>
-    <div class="modal-dialog inventory-dialog" role="dialog" aria-modal="true" aria-labelledby="inventory-title">
-      <button class="modal-close" data-close-inventory aria-label="닫기">×</button>
+
+    <div
+      class="modal-dialog inventory-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="inventory-title"
+    >
+      <button
+        class="modal-close"
+        data-close-inventory
+        aria-label="닫기"
+      >
+        ×
+      </button>
+
       <div class="eyebrow">INVENTORY</div>
       <h2 id="inventory-title">보유 물품</h2>
+
       <div id="inventory-content" class="inventory-grid"></div>
     </div>
   </div>
 
-  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <!-- 튜토리얼 모달 -->
+  <div
+    id="tutorial-modal"
+    class="modal hidden tutorial-modal"
+    aria-hidden="true"
+  >
+    <div class="modal-backdrop" data-close-tutorial></div>
+
+    <div
+      class="tutorial-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="tutorial-title"
+    >
+      <button
+        class="modal-close"
+        data-close-tutorial
+        aria-label="튜토리얼 닫기"
+      >
+        ×
+      </button>
+
+      <div class="tutorial-hero">
+        <div class="tutorial-icon" id="tutorial-icon">🌱</div>
+
+        <div>
+          <div class="eyebrow">FARMING GUIDE</div>
+
+          <div
+            class="tutorial-kicker"
+            id="tutorial-kicker"
+          >
+            초보 농부 가이드
+          </div>
+
+          <h2 id="tutorial-title">
+            들녘의 하루에 오신 것을 환영합니다
+          </h2>
+
+          <p
+            id="tutorial-description"
+            class="tutorial-description"
+          ></p>
+        </div>
+      </div>
+
+      <div
+        class="tutorial-progress"
+        id="tutorial-progress"
+      ></div>
+
+      <div
+        class="tutorial-body"
+        id="tutorial-body"
+      ></div>
+
+      <div class="tutorial-footer">
+        <button
+          id="tutorial-skip"
+          class="tutorial-text-btn"
+        >
+          건너뛰기
+        </button>
+
+        <div class="tutorial-nav">
+          <button
+            id="tutorial-prev"
+            class="wood-btn tutorial-prev"
+          >
+            이전
+          </button>
+
+          <button
+            id="tutorial-next"
+            class="wood-btn tutorial-next"
+          >
+            다음
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 토스트 -->
+  <div
+    id="toast"
+    class="toast"
+    role="status"
+    aria-live="polite"
+  ></div>
 
   <script src="script.js"></script>
 </body>
