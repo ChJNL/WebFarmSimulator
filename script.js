@@ -1,4330 +1,1179 @@
+/* ==========================================================================
+   흙내음 농장 — script.js  (2차 업데이트: 확장 / 농기구 / 시세 / 레벨)
+
+   모듈 목차
+   0. 상수 / 데이터 정의
+   1. 유틸리티
+   2. 상태(state) 생성 · 저장 · 불러오기 · 마이그레이션
+   3. 환경(날씨·계절·시장) 시뮬레이션
+   4. 밭(plot) 시뮬레이션 — 수분 / 잡초 / 건강도 / 성장
+   5. 메인 게임 루프
+   6. 레벨 / 경험치
+   7. 플레이어 액션 (상점 · 농기구 · 밭 확장 · 작물 관리 · 판매)
+   8. 렌더링 — 대시보드
+   9. 렌더링 — 밭 그리드 (확장/잠금 포함)
+   10. 렌더링 — 상점 / 인벤토리 / 시세
+   11. 밭 칸 액션 팝업
+   12. 토스트 알림
+   13. 탭 전환 / 초기화
+   ========================================================================== */
+
 'use strict';
 
-/* =========================================================
-   기본 설정
-========================================================= */
+/* --------------------------------------------------------------------------
+   0. 상수 / 데이터 정의
+   -------------------------------------------------------------------------- */
 
-const STORAGE_KEY = 'farm_sim_prototype_v1';
+const SAVE_KEY = 'heulnaeum_farm_save_v2';
 
-const FIELD_ROWS = 4;
-const FIELD_COLS = 6;
-const FIELD_SIZE =
-  FIELD_ROWS * FIELD_COLS;
+const GRID_COLS = 5;
+const START_PLOTS = 6;     // 시작 시 개간된 밭 칸 수
+const MAX_PLOTS = 20;      // 최대 확장 가능 칸 수 (5열 x 4행)
+const BASE_EXPAND_COST = 80;
+const EXPAND_COST_STEP = 70;
 
-const REAL_TICK_MS = 1000;
+const TICK_MS = 1000;          // 실제 1초마다 한 틱
+const MINUTES_PER_TICK = 30;   // 한 틱 = 게임 내 30분
+const DAY_MINUTES = 1440;      // 하루 = 1440분 (48틱 ≈ 48초)
+const SEASON_DAYS = 6;         // 한 계절 = 6일
 
-/*
-  실제 1초 = 게임 5분
-  실제 12초 = 게임 1시간
-  실제 약 288초 = 게임 1일
-*/
-const GAME_MINUTES_PER_REAL_SECOND = 5;
-
-const GAME_DAY_MINUTES = 24 * 60;
-
-const WEATHER_REWIND_DAYS = 90;
-
-
-/* =========================================================
-   작물 데이터
-========================================================= */
+const STAGE_NAMES = ['씨앗', '새싹', '성장', '성숙', '수확 가능'];
 
 const CROPS = {
   tomato: {
-    id: 'tomato',
-    name: '방울토마토',
-    icon: '🍅',
-
-    seedPrice: 900,
-    sellPrice: 2600,
-
-    growthHours: 72,
-
-    optimalTemp: [18, 28],
-    optimalMoisture: [45, 75],
-    optimalSun: [55, 100],
-
-    baseQuality: 66,
-    baseHealth: 100
+    id: 'tomato', name: '토마토', emoji: '🍅',
+    seedPrice: 15, basePrice: 40, unlockLevel: 1,
+    stageDuration: 1440,               // 4일
+    tempOptimal: [20, 28], tempAccept: [14, 33],
+    moistureOptimal: [45, 70],
+    hint: '따뜻한 날씨를 좋아해요',
   },
-
   lettuce: {
-    id: 'lettuce',
-    name: '상추',
-    icon: '🥬',
-
-    seedPrice: 500,
-    sellPrice: 1500,
-
-    growthHours: 36,
-
-    optimalTemp: [12, 24],
-    optimalMoisture: [55, 85],
-    optimalSun: [45, 90],
-
-    baseQuality: 62,
-    baseHealth: 100
+    id: 'lettuce', name: '상추', emoji: '🥬',
+    seedPrice: 8, basePrice: 22, unlockLevel: 1,
+    stageDuration: 720,                // 2일
+    tempOptimal: [9, 18], tempAccept: [2, 23],
+    moistureOptimal: [58, 82],
+    hint: '빨리 자라는 서늘한 잎채소예요',
   },
-
+  potato: {
+    id: 'potato', name: '감자', emoji: '🥔',
+    seedPrice: 12, basePrice: 32, unlockLevel: 2,
+    stageDuration: 1800,               // 5일
+    tempOptimal: [12, 20], tempAccept: [5, 26],
+    moistureOptimal: [50, 75],
+    hint: '서늘한 날씨를 좋아해요',
+  },
+  corn: {
+    id: 'corn', name: '옥수수', emoji: '🌽',
+    seedPrice: 20, basePrice: 55, unlockLevel: 3,
+    stageDuration: 2160,               // 6일
+    tempOptimal: [22, 31], tempAccept: [16, 36],
+    moistureOptimal: [40, 65],
+    hint: '한여름에 잘 자라요',
+  },
   strawberry: {
-    id: 'strawberry',
-    name: '딸기',
-    icon: '🍓',
-
-    seedPrice: 1100,
-    sellPrice: 3400,
-
-    growthHours: 96,
-
-    optimalTemp: [14, 22],
-    optimalMoisture: [50, 80],
-    optimalSun: [60, 100],
-
-    baseQuality: 64,
-    baseHealth: 100
+    id: 'strawberry', name: '딸기', emoji: '🍓',
+    seedPrice: 25, basePrice: 70, unlockLevel: 4,
+    stageDuration: 1080,               // 3일
+    tempOptimal: [14, 22], tempAccept: [8, 27],
+    moistureOptimal: [55, 78],
+    hint: '봄가을 서늘한 날씨가 적합해요',
   },
-
-  wheat: {
-    id: 'wheat',
-    name: '밀',
-    icon: '🌾',
-
-    seedPrice: 300,
-    sellPrice: 1000,
-
-    growthHours: 60,
-
-    optimalTemp: [10, 25],
-    optimalMoisture: [35, 70],
-    optimalSun: [50, 100],
-
-    baseQuality: 58,
-    baseHealth: 100
-  }
+  watermelon: {
+    id: 'watermelon', name: '수박', emoji: '🍉',
+    seedPrice: 40, basePrice: 120, unlockLevel: 5,
+    stageDuration: 2520,               // 7일
+    tempOptimal: [24, 32], tempAccept: [18, 37],
+    moistureOptimal: [50, 72],
+    hint: '무더운 여름, 긴 재배기간이 필요한 고급 작물이에요',
+  },
 };
 
-
-/* =========================================================
-   농자재 데이터
-========================================================= */
-
-const INPUT_ITEMS = {
+const SUPPLIES = {
   fertilizer: {
-    id: 'fertilizer',
-    name: '유기질 비료',
-    icon: '🪴',
-    buyPrice: 700,
-    kind: 'input'
+    id: 'fertilizer', name: '퇴비 (비료)', icon: '🌱', price: 30,
+    desc: '비옥도 +25 · 품질 상승 · 일시적 성장 촉진',
   },
-
   pesticide: {
-    id: 'pesticide',
-    name: '친환경 농약',
-    icon: '🧴',
-    buyPrice: 850,
-    kind: 'input'
+    id: 'pesticide', name: '친환경 방제약', icon: '🧴', price: 25,
+    desc: '병해충 제거 · 건강도 +15 회복',
   },
-
-  water: {
-    id: 'water',
-    name: '물통',
-    icon: '💧',
-    buyPrice: 120,
-    kind: 'input'
-  }
 };
 
-
-/* =========================================================
-   날씨
-========================================================= */
+// 농기구 업그레이드: 레벨 1은 기본 지급, 2·3은 돈으로 구매
+const TOOLS = {
+  wateringCan: {
+    id: 'wateringCan', name: '물뿌리개', icon: '🚿',
+    levels: [
+      { level: 1, cost: 0,   moistureAdd: 40,  bulkWater: false, bulkCooldownDays: 0, desc: '칸당 수분 +40' },
+      { level: 2, cost: 150, moistureAdd: 70,  bulkWater: true,  bulkCooldownDays: 1, desc: '칸당 수분 +70 · 전체 물주기(하루 1회)' },
+      { level: 3, cost: 400, moistureAdd: 100, bulkWater: true,  bulkCooldownDays: 0, desc: '칸당 수분 100% 충전 · 전체 물주기 무제한' },
+    ],
+  },
+  hoe: {
+    id: 'hoe', name: '괭이', icon: '⛏️',
+    levels: [
+      { level: 1, cost: 0,   adjacentClearRatio: 0,    weedGrowthMult: 1.0, desc: '클릭한 칸의 잡초만 제거' },
+      { level: 2, cost: 150, adjacentClearRatio: 0.5,  weedGrowthMult: 1.0, desc: '인접한 칸 잡초도 50% 감소' },
+      { level: 3, cost: 400, adjacentClearRatio: 1.0,  weedGrowthMult: 0.8, desc: '인접 칸 잡초 완전 제거 · 잡초 재발 속도 20%↓' },
+    ],
+  },
+};
 
 const WEATHER_TYPES = {
-  sunny: {
-    name: '맑음',
-    icon: '☀️',
-    tempBase: 23,
-    sun: 100,
-    rain: 0
-  },
-
-  cloudy: {
-    name: '구름 많음',
-    icon: '⛅',
-    tempBase: 19,
-    sun: 65,
-    rain: 0.1
-  },
-
-  rainy: {
-    name: '비',
-    icon: '🌧️',
-    tempBase: 17,
-    sun: 35,
-    rain: 0.9
-  },
-
-  windy: {
-    name: '강풍',
-    icon: '🌬️',
-    tempBase: 16,
-    sun: 55,
-    rain: 0.03
-  }
+  sunny:     { name: '맑음', icon: '☀️', tempMod: 2,  sunlightMult: 1.2 },
+  cloudy:    { name: '흐림', icon: '☁️', tempMod: 0,  sunlightMult: 1.0 },
+  rainy:     { name: '비',   icon: '🌧️', tempMod: -2, sunlightMult: 0.85 },
+  heatwave:  { name: '폭염', icon: '🥵', tempMod: 8,  sunlightMult: 0.95 },
+  coldsnap:  { name: '한파', icon: '🥶', tempMod: -9, sunlightMult: 0.8 },
 };
 
-
-/* =========================================================
-   계절
-========================================================= */
-
 const SEASONS = [
-  {
-    name: '봄',
-    months: [3, 4, 5],
-    tempOffset: 2
-  },
-
-  {
-    name: '여름',
-    months: [6, 7, 8],
-    tempOffset: 6
-  },
-
-  {
-    name: '가을',
-    months: [9, 10, 11],
-    tempOffset: 0
-  },
-
-  {
-    name: '겨울',
-    months: [12, 1, 2],
-    tempOffset: -6
-  }
+  { id: 'spring', name: '봄',   tempRange: [13, 22], weatherWeights: { sunny: 40, cloudy: 30, rainy: 30 } },
+  { id: 'summer', name: '여름', tempRange: [24, 33], weatherWeights: { sunny: 35, cloudy: 20, rainy: 25, heatwave: 20 } },
+  { id: 'fall',   name: '가을', tempRange: [11, 20], weatherWeights: { sunny: 35, cloudy: 35, rainy: 30 } },
+  { id: 'winter', name: '겨울', tempRange: [-3, 7],  weatherWeights: { sunny: 25, cloudy: 35, rainy: 10, coldsnap: 30 } },
 ];
 
+const GRADE_MULTIPLIER = { '특': 1.6, '상': 1.25, '중': 1.0, '하': 0.6 };
 
-/* =========================================================
-   게임 상태
-========================================================= */
+// 시장 시세: 하루에 한 번 소폭 랜덤 변동 (0.75배 ~ 1.35배)
+const MARKET_MIN = 0.75;
+const MARKET_MAX = 1.35;
+const MARKET_DAILY_DRIFT = 0.08;
 
-let state =
-  createDefaultState();
+// 레벨/경험치
+const EXP_BASE = 90;
+const EXP_STEP = 70;
+const EXP_REWARD = {
+  weed: 3,
+  pest: 6,
+  fertilize: 4,
+};
 
-let selectedCellIndex = null;
+/* --------------------------------------------------------------------------
+   1. 유틸리티
+   -------------------------------------------------------------------------- */
 
-let currentMarketTab = 'buy';
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const randInt = (lo, hi) => Math.floor(Math.random() * (hi - lo + 1)) + lo;
+const randRange = (lo, hi) => Math.random() * (hi - lo) + lo;
 
-let lastTickTimestamp =
-  Date.now();
-
-let toastTimer = null;
-
-let tutorialStep = 0;
-
-
-/* =========================================================
-   튜토리얼 데이터
-========================================================= */
-
-const TUTORIAL_STEPS = [
-  {
-    icon: '🌱',
-
-    kicker: '1단계 · 농장 살펴보기',
-
-    title: '가장 먼저 밭을 확인하세요',
-
-    description:
-      '화면 중앙의 밭은 24시간 실제 농장처럼 상태가 변합니다. 각 칸을 클릭하면 현재 작물과 토양 상태를 상세하게 확인할 수 있습니다.',
-
-    body: `
-      <h3>밭 한 칸을 클릭해 보세요</h3>
-
-      <p>
-        빈 밭에서는 씨앗을 심을 수 있고,
-        작물이 자라기 시작하면 성장도·건강도·수분·비옥도와
-        잡초·병해충 상태를 확인할 수 있습니다.
-      </p>
-
-      <div class="tutorial-feature-grid">
-        <div class="tutorial-feature">
-          <strong>🟫 빈 밭</strong>
-          <span>씨앗을 선택해 파종합니다.</span>
-        </div>
-
-        <div class="tutorial-feature">
-          <strong>🌱 성장 중</strong>
-          <span>환경을 관리하며 성장시킵니다.</span>
-        </div>
-
-        <div class="tutorial-feature">
-          <strong>🐛 위협 발생</strong>
-          <span>잡초와 병해충을 방치하지 마세요.</span>
-        </div>
-
-        <div class="tutorial-feature">
-          <strong>🧺 수확 가능</strong>
-          <span>100%가 되면 수확할 수 있습니다.</span>
-        </div>
-      </div>
-    `
-  },
-
-  {
-    icon: '💧',
-
-    kicker: '2단계 · 작물 관리',
-
-    title: '농작물은 환경에 반응합니다',
-
-    description:
-      '성장은 단순한 시간 경과가 아닙니다. 온도·일조량·토양 수분·비옥도와 관리 상태가 성장 속도와 건강도에 영향을 줍니다.',
-
-    body: `
-      <h3>작물 상태를 계속 관리하세요</h3>
-
-      <div class="tutorial-feature-grid">
-        <div class="tutorial-feature">
-          <strong>💧 물주기</strong>
-          <span>토양이 건조하면 수분을 보충하세요.</span>
-        </div>
-
-        <div class="tutorial-feature">
-          <strong>🌿 잡초 제거</strong>
-          <span>잡초는 성장 속도와 건강도에 악영향을 줍니다.</span>
-        </div>
-
-        <div class="tutorial-feature">
-          <strong>🧴 병해충 방제</strong>
-          <span>발생 즉시 농약으로 피해를 줄이세요.</span>
-        </div>
-
-        <div class="tutorial-feature">
-          <strong>✨ 비료</strong>
-          <span>성장 부스트와 최종 품질 향상에 도움을 줍니다.</span>
-        </div>
-      </div>
-
-      <div class="tutorial-tip">
-        💡 모든 작물의 적정 온도와 수분 범위가 다릅니다.
-        상점과 밭 상세 화면에서 작물별 기준을 확인할 수 있습니다.
-      </div>
-    `
-  },
-
-  {
-    icon: '🌦️',
-
-    kicker: '3단계 · 날씨와 시간',
-
-    title: '날씨와 게임 시간이 계속 흐릅니다',
-
-    description:
-      '게임 시간은 실제 시간보다 빠르게 진행됩니다. 하루가 지나면 날씨가 달라지고, 시간대에 따라 일조량과 온도도 변합니다.',
-
-    body: `
-      <h3>상단 대시보드를 자주 확인하세요</h3>
-
-      <div class="tutorial-feature-grid">
-        <div class="tutorial-feature">
-          <strong>☀️ 날씨</strong>
-          <span>맑음·구름·비·강풍이 작물 환경을 바꿉니다.</span>
-        </div>
-
-        <div class="tutorial-feature">
-          <strong>🌡️ 온도</strong>
-          <span>작물의 적정 온도에서 성장 효율이 높습니다.</span>
-        </div>
-
-        <div class="tutorial-feature">
-          <strong>☀️ 일조량</strong>
-          <span>낮 시간과 날씨에 따라 달라집니다.</span>
-        </div>
-
-        <div class="tutorial-feature">
-          <strong>🕒 게임 시간</strong>
-          <span>시간이 흐르며 작물 성장과 수분 변화가 진행됩니다.</span>
-        </div>
-      </div>
-    `
-  },
-
-  {
-    icon: '🛒',
-
-    kicker: '4단계 · 경제와 인벤토리',
-
-    title: '씨앗과 농자재를 사고 수확물을 판매하세요',
-
-    description:
-      '농장의 돈은 재배를 통해 순환합니다. 상점에서 필요한 자원을 사고, 좋은 품질의 수확물을 판매해 자금을 늘리세요.',
-
-    body: `
-      <h3>기본적인 농장 운영 순서</h3>
-
-      <div class="tutorial-feature-grid">
-        <div class="tutorial-feature">
-          <strong>1. 씨앗 구매</strong>
-          <span>오른쪽 MARKET의 구매 탭에서 구입합니다.</span>
-        </div>
-
-        <div class="tutorial-feature">
-          <strong>2. 파종과 관리</strong>
-          <span>밭을 클릭해 씨앗을 심고 관리합니다.</span>
-        </div>
-
-        <div class="tutorial-feature">
-          <strong>3. 수확</strong>
-          <span>성숙하면 수확하여 인벤토리에 넣습니다.</span>
-        </div>
-
-        <div class="tutorial-feature">
-          <strong>4. 판매</strong>
-          <span>MARKET → 판매 탭에서 수확물을 판매합니다.</span>
-        </div>
-      </div>
-
-      <div class="tutorial-tip">
-        🎒 인벤토리에서는 씨앗·수확물·비료·농약·물통의
-        현재 보유량을 확인할 수 있습니다.
-      </div>
-    `
-  },
-
-  {
-    icon: '🏆',
-
-    kicker: '5단계 · 품질과 목표',
-
-    title: '결국 좋은 농산물을 만드는 것이 목표입니다',
-
-    description:
-      '수확 품질은 건강도, 환경 관리, 비료 사용, 잡초와 병해충 방어 상태가 종합되어 결정됩니다.',
-
-    body: `
-      <h3>좋은 품질을 만드는 핵심</h3>
-
-      <div class="tutorial-feature-grid">
-        <div class="tutorial-feature">
-          <strong>🌡️ 적정 환경</strong>
-          <span>온도·일조·수분을 작물에 맞게 유지하세요.</span>
-        </div>
-
-        <div class="tutorial-feature">
-          <strong>❤️ 건강한 작물</strong>
-          <span>위협과 스트레스를 줄여 건강도를 지키세요.</span>
-        </div>
-
-        <div class="tutorial-feature">
-          <strong>✨ 비료 활용</strong>
-          <span>성장과 품질을 높이는 데 활용할 수 있습니다.</span>
-        </div>
-
-        <div class="tutorial-feature">
-          <strong>💰 판매 수익</strong>
-          <span>높은 등급일수록 더 높은 가격을 기대할 수 있습니다.</span>
-        </div>
-      </div>
-
-      <div class="tutorial-tip">
-        저장은 자동으로 이루어지며, 브라우저의 LocalStorage에
-        농장 상태가 보관됩니다.
-        이제 밭을 선택해 첫 작물을 심어보세요!
-      </div>
-    `
+function weightedPick(weights) {
+  const entries = Object.entries(weights);
+  const total = entries.reduce((s, [, w]) => s + w, 0);
+  let r = Math.random() * total;
+  for (const [key, w] of entries) {
+    if (r < w) return key;
+    r -= w;
   }
-];
+  return entries[0][0];
+}
 
+function formatMoney(n) { return Math.round(n).toLocaleString('ko-KR') + '원'; }
 
-/* =========================================================
-   초기 상태
-========================================================= */
+function formatTime(minutes) {
+  const h = Math.floor(minutes / 60) % 24;
+  const m = Math.floor(minutes % 60);
+  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+}
+
+function gradeFromScore(score) {
+  if (score >= 85) return '특';
+  if (score >= 65) return '상';
+  if (score >= 40) return '중';
+  return '하';
+}
+
+function expForLevel(level) { return Math.round(EXP_BASE + (level - 1) * EXP_STEP); }
+
+function computeExpandCost(unlockedCount) {
+  return BASE_EXPAND_COST + (unlockedCount - START_PLOTS) * EXPAND_COST_STEP;
+}
+
+function marketUnitPrice(crop, grade) {
+  const marketMult = state.market[crop.id] || 1;
+  return Math.round(crop.basePrice * GRADE_MULTIPLIER[grade] * marketMult);
+}
+
+/* --------------------------------------------------------------------------
+   2. 상태(state) 생성 / 저장 / 불러오기 / 마이그레이션
+   -------------------------------------------------------------------------- */
+
+function createEmptyPlot(id) {
+  return {
+    id,
+    cropId: null,
+    stage: 0,
+    progress: 0,
+    moisture: randInt(45, 60),
+    fertility: randInt(40, 60),
+    health: 100,
+    weedLevel: 0,
+    hasPest: false,
+    fertilizedUsed: false,
+    fertBoostTicks: 0,
+    healthSum: 0, healthTicks: 0,
+    weedSum: 0, weedTicks: 0,
+    pestTicks: 0,
+  };
+}
 
 function createDefaultState() {
+  const field = Array.from({ length: MAX_PLOTS }, (_, i) => (i < START_PLOTS ? createEmptyPlot(i) : null));
+  const market = {};
+  const marketTrend = {};
+  Object.keys(CROPS).forEach((id) => { market[id] = 1.0; marketTrend[id] = 'flat'; });
+
   return {
-    version: 1,
-
-    money: 12000,
-
-    gameTime:
-      new Date(
-        '2026-09-01T06:00:00+09:00'
-      ).getTime(),
-
-    weather: 'sunny',
-
-    weatherSeedDay: null,
-
-    lastSavedAt:
-      Date.now(),
-
-    tutorialSeen: false,
-
-    inventory: {
-      seeds: {
-        tomato: 2,
-        lettuce: 4,
-        strawberry: 1,
-        wheat: 5
-      },
-
-      harvest: {
-        tomato: 0,
-        lettuce: 0,
-        strawberry: 0,
-        wheat: 0
-      },
-
-      inputs: {
-        fertilizer: 3,
-        pesticide: 2,
-        water: 18
-      }
+    money: 1200,
+    level: 1,
+    exp: 0,
+    time: {
+      day: 1,
+      seasonIndex: 0,
+      seasonDay: 1,
+      minutes: 360, // 06:00 시작
+      weatherId: 'sunny',
+      temperature: 18,
     },
-
-    field:
-      Array.from(
-        {
-          length: FIELD_SIZE
-        },
-        (_, i) =>
-          createEmptyCell(i)
-      )
+    inventory: {
+      seeds: { tomato: 2, lettuce: 2 },
+      supplies: { fertilizer: 1, pesticide: 1 },
+      harvest: {},
+    },
+    tools: { wateringCanLevel: 1, hoeLevel: 1 },
+    unlockedCount: START_PLOTS,
+    field,
+    market,
+    marketTrend,
+    lastBulkWaterDay: 0,
   };
 }
 
+let state = createDefaultState();
+let ticksSinceSave = 0;
+let currentPopupPlotIndex = null;
+let activeTab = 'shop';
 
-/* =========================================================
-   빈 밭 생성
-========================================================= */
-
-function createEmptyCell(index) {
-  return {
-    id: index,
-
-    cropId: null,
-
-    growth: 0,
-
-    health: 100,
-
-    moisture: 52,
-
-    fertility: 68,
-
-    weed: false,
-
-    pests: false,
-
-    fertilized: false,
-
-    plantedAt: null,
-
-    lastTickAt: null,
-
-    diseasePressure: 0,
-
-    qualityScore: 0,
-
-    dead: false
-  };
+function isValidState(s) {
+  return s && s.time && s.inventory && Array.isArray(s.field);
 }
 
+// 이전 버전 저장 데이터에 새 필드가 없을 경우 기본값으로 보강한다.
+function migrateState(s) {
+  const d = createDefaultState();
+  if (s.level === undefined) s.level = d.level;
+  if (s.exp === undefined) s.exp = d.exp;
+  if (!s.tools) s.tools = d.tools;
+  if (s.tools.wateringCanLevel === undefined) s.tools.wateringCanLevel = 1;
+  if (s.tools.hoeLevel === undefined) s.tools.hoeLevel = 1;
+  if (!s.market) s.market = d.market;
+  if (!s.marketTrend) s.marketTrend = d.marketTrend;
+  Object.keys(CROPS).forEach((id) => {
+    if (s.market[id] === undefined) s.market[id] = 1.0;
+    if (s.marketTrend[id] === undefined) s.marketTrend[id] = 'flat';
+  });
+  if (s.lastBulkWaterDay === undefined) s.lastBulkWaterDay = 0;
 
-/* =========================================================
-   초기화
-========================================================= */
+  // 구버전(1차) 저장: field 길이가 고정 12칸짜리였던 경우 → 새 MAX_PLOTS 배열로 이식
+  if (!Array.isArray(s.field) || s.field.length !== MAX_PLOTS) {
+    const oldField = Array.isArray(s.field) ? s.field : [];
+    const newField = Array.from({ length: MAX_PLOTS }, (_, i) => {
+      if (i < oldField.length && oldField[i]) return oldField[i];
+      if (i < Math.max(START_PLOTS, oldField.length)) return createEmptyPlot(i);
+      return null;
+    });
+    s.field = newField;
+    s.unlockedCount = Math.max(START_PLOTS, oldField.length);
+  }
+  if (s.unlockedCount === undefined) {
+    s.unlockedCount = s.field.filter((p) => p !== null).length || START_PLOTS;
+  }
+  return s;
+}
 
-function init() {
-  const hasSavedGame =
-    loadGame();
-
-  normalizeState();
-
-  updateWeather(true);
-
-  bindUI();
-
-  renderAll();
-
-  lastTickTimestamp =
-    Date.now();
-
-  setInterval(
-    gameTick,
-    REAL_TICK_MS
-  );
-
-  window.addEventListener(
-    'beforeunload',
-    saveGame
-  );
-
-  /*
-    첫 실행에서는 자동으로
-    튜토리얼을 띄운다.
-  */
-  if (
-    !hasSavedGame ||
-    !state.tutorialSeen
-  ) {
-    setTimeout(
-      () => openTutorial(false),
-      250
-    );
+function loadState() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return createDefaultState();
+    const parsed = JSON.parse(raw);
+    if (!isValidState(parsed)) return createDefaultState();
+    return migrateState(parsed);
+  } catch (e) {
+    console.warn('저장 데이터를 불러오지 못했습니다. 새 게임을 시작합니다.', e);
+    return createDefaultState();
   }
 }
 
-
-/* =========================================================
-   이벤트 연결
-========================================================= */
-
-function bindUI() {
-  /* 인벤토리 */
-  document
-    .getElementById(
-      'inventory-btn'
-    )
-    .addEventListener(
-      'click',
-      openInventory
-    );
-
-  /* 사용법 */
-  document
-    .getElementById(
-      'help-btn'
-    )
-    .addEventListener(
-      'click',
-      () => openTutorial(false)
-    );
-
-  /* 저장 */
-  document
-    .getElementById(
-      'save-btn'
-    )
-    .addEventListener(
-      'click',
-      () => {
-        saveGame();
-
-        showToast(
-          '게임이 저장되었습니다.'
-        );
-      }
-    );
-
-  /* 새 게임 */
-  document
-    .getElementById(
-      'reset-btn'
-    )
-    .addEventListener(
-      'click',
-      resetGame
-    );
-
-  /* 밭 모달 닫기 */
-  document
-    .querySelectorAll(
-      '[data-close-modal]'
-    )
-    .forEach(
-      el =>
-        el.addEventListener(
-          'click',
-          closeCellModal
-        )
-    );
-
-  /* 인벤토리 닫기 */
-  document
-    .querySelectorAll(
-      '[data-close-inventory]'
-    )
-    .forEach(
-      el =>
-        el.addEventListener(
-          'click',
-          closeInventory
-        )
-    );
-
-  /* 튜토리얼 닫기 */
-  document
-    .querySelectorAll(
-      '[data-close-tutorial]'
-    )
-    .forEach(
-      el =>
-        el.addEventListener(
-          'click',
-          () =>
-            finishTutorial()
-        )
-    );
-
-  /* 튜토리얼 이전 */
-  document
-    .getElementById(
-      'tutorial-prev'
-    )
-    .addEventListener(
-      'click',
-      tutorialPrev
-    );
-
-  /* 튜토리얼 다음 */
-  document
-    .getElementById(
-      'tutorial-next'
-    )
-    .addEventListener(
-      'click',
-      tutorialNext
-    );
-
-  /* 튜토리얼 건너뛰기 */
-  document
-    .getElementById(
-      'tutorial-skip'
-    )
-    .addEventListener(
-      'click',
-      finishTutorial
-    );
-
-  /* 상점 탭 */
-  document
-    .querySelectorAll(
-      '.tab-btn'
-    )
-    .forEach(
-      btn => {
-        btn.addEventListener(
-          'click',
-          () => {
-            currentMarketTab =
-              btn.dataset.tab;
-
-            renderMarket();
-          }
-        );
-      }
-    );
-
-  /* ESC */
-  document.addEventListener(
-    'keydown',
-    e => {
-      if (
-        e.key ===
-        'Escape'
-      ) {
-        closeCellModal();
-
-        closeInventory();
-
-        finishTutorial();
-      }
+function saveState() {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify(state));
+    const el = document.getElementById('save-indicator');
+    if (el) {
+      const now = new Date();
+      el.textContent = `자동 저장됨 · ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
     }
-  );
+  } catch (e) {
+    console.warn('저장 실패', e);
+  }
 }
 
+/* --------------------------------------------------------------------------
+   3. 환경(날씨 · 계절 · 시장) 시뮬레이션
+   -------------------------------------------------------------------------- */
 
-/* =========================================================
-   게임 시간
-========================================================= */
+function getCurrentSeason() { return SEASONS[state.time.seasonIndex]; }
+
+function rollWeather() {
+  const season = getCurrentSeason();
+  const id = weightedPick(season.weatherWeights);
+  state.time.weatherId = id;
+  const base = randRange(season.tempRange[0], season.tempRange[1]);
+  state.time.temperature = Math.round(base + WEATHER_TYPES[id].tempMod);
+}
+
+function updateMarketPrices() {
+  Object.keys(CROPS).forEach((cropId) => {
+    const prev = state.market[cropId];
+    const delta = randRange(-MARKET_DAILY_DRIFT, MARKET_DAILY_DRIFT);
+    const next = clamp(prev + delta, MARKET_MIN, MARKET_MAX);
+    state.market[cropId] = next;
+    state.marketTrend[cropId] = next > prev + 0.004 ? 'up' : next < prev - 0.004 ? 'down' : 'flat';
+  });
+}
+
+function advanceDay() {
+  state.time.day += 1;
+  state.time.seasonDay += 1;
+  if (state.time.seasonDay > SEASON_DAYS) {
+    state.time.seasonDay = 1;
+    state.time.seasonIndex = (state.time.seasonIndex + 1) % SEASONS.length;
+    showToast(`계절이 ${getCurrentSeason().name}(으)로 바뀌었습니다.`, 'good');
+  }
+  rollWeather();
+  updateMarketPrices();
+
+  if (state.time.weatherId === 'rainy') {
+    showToast('비가 내려요 — 밭의 토양 수분이 저절로 채워집니다.', 'good');
+  }
+
+  // 하루가 지날 때마다 병해충 발생 확률 체크 (개간된 밭만)
+  state.field.forEach((plot) => {
+    if (plot && plot.cropId && !plot.hasPest) {
+      if (Math.random() < 0.12) {
+        plot.hasPest = true;
+        const crop = CROPS[plot.cropId];
+        showToast(`${plot.id + 1}번 밭의 ${crop.name}에 병해충이 발생했습니다!`, 'bad');
+      }
+    }
+  });
+}
+
+function getEnv() {
+  return {
+    temperature: state.time.temperature,
+    weatherId: state.time.weatherId,
+    sunlight: WEATHER_TYPES[state.time.weatherId].sunlightMult,
+  };
+}
+
+/* --------------------------------------------------------------------------
+   4. 밭(plot) 시뮬레이션 — 수분 / 잡초 / 건강도 / 성장
+   -------------------------------------------------------------------------- */
+
+function rangeFactor(value, optimal, accept) {
+  if (value >= optimal[0] && value <= optimal[1]) return 1.2;
+  if (value >= accept[0] && value <= accept[1]) return 0.9;
+  return 0.35;
+}
+
+function updatePlotMoisture(plot, env, ticks) {
+  if (env.weatherId === 'rainy') {
+    plot.moisture = clamp(plot.moisture + 3 * ticks, 0, 100); // 비 오는 날은 자동으로 채워짐 → 물주기 생략 가능
+  } else {
+    const evap = (0.55 + Math.max(0, env.temperature - 25) * 0.06) * ticks;
+    plot.moisture = clamp(plot.moisture - evap, 0, 100);
+  }
+}
+
+function updatePlotWeeds(plot, ticks) {
+  if (!plot.cropId) return;
+  const growthMult = TOOLS.hoe.levels[state.tools.hoeLevel - 1].weedGrowthMult;
+  plot.weedLevel = clamp(plot.weedLevel + 0.45 * growthMult * ticks, 0, 100);
+}
+
+function killPlot(plot) {
+  const crop = CROPS[plot.cropId];
+  showToast(`${plot.id + 1}번 밭의 ${crop.name}이(가) 시들어 죽고 말았습니다...`, 'bad');
+  resetPlotAfterCrop(plot, false);
+}
+
+// 완만해진 건강도 곡선: 적정범위를 살짝 벗어난 정도는 거의 상쇄되고,
+// 심각하게 벗어나거나(허용범위 밖) 병해충이 있을 때만 확실히 타격을 준다.
+function updatePlotHealth(plot, crop, env, ticks) {
+  let change = 0;
+
+  const [mLo, mHi] = crop.moistureOptimal;
+  if (plot.moisture < mLo - 20 || plot.moisture > mHi + 20) change -= 0.45;
+  else if (plot.moisture < mLo || plot.moisture > mHi) change -= 0.06;
+
+  const [taLo, taHi] = crop.tempAccept;
+  const [tLo, tHi] = crop.tempOptimal;
+  if (env.temperature < taLo || env.temperature > taHi) change -= 0.5;
+  else if (env.temperature < tLo || env.temperature > tHi) change -= 0.06;
+
+  if (plot.weedLevel > 70) change -= 0.15;
+  if (plot.hasPest) change -= 1.3;
+
+  if (change > -0.3) change += 0.3; // 경미한 스트레스는 회복력으로 상쇄, 완벽한 조건이면 순성장
+
+  plot.health = clamp(plot.health + change * ticks, 0, 100);
+
+  plot.healthSum += plot.health * ticks;
+  plot.healthTicks += ticks;
+  plot.weedSum += plot.weedLevel * ticks;
+  plot.weedTicks += ticks;
+  if (plot.hasPest) plot.pestTicks += ticks;
+
+  if (plot.health <= 0) killPlot(plot);
+}
+
+function computeGrowthMultiplier(plot, crop, env) {
+  const tempFactor = rangeFactor(env.temperature, crop.tempOptimal, crop.tempAccept);
+  const moistAccept = [crop.moistureOptimal[0] - 20, crop.moistureOptimal[1] + 20];
+  const moistFactor = rangeFactor(plot.moisture, crop.moistureOptimal, moistAccept);
+  const sunFactor = env.sunlight;
+  const fertilityFactor = 0.7 + (plot.fertility / 100) * 0.6;
+  const fertBoost = plot.fertBoostTicks > 0 ? 1.3 : 1.0;
+  const weedPenalty = 1 - (plot.weedLevel / 100) * 0.5;
+  const healthFactor = 0.5 + (plot.health / 100) * 0.5;
+  return tempFactor * moistFactor * sunFactor * fertilityFactor * fertBoost * weedPenalty * healthFactor;
+}
+
+function updatePlotGrowth(plot, crop, env, minutesElapsed) {
+  if (plot.stage >= 4) return;
+  const multiplier = computeGrowthMultiplier(plot, crop, env);
+  plot.progress += minutesElapsed * multiplier;
+  if (plot.progress >= crop.stageDuration) {
+    plot.progress -= crop.stageDuration;
+    plot.stage += 1;
+    if (plot.stage >= 4) { plot.stage = 4; plot.progress = 0; }
+  }
+}
+
+function resetPlotAfterCrop(plot, depleteSoil) {
+  if (depleteSoil) plot.fertility = clamp(plot.fertility - 12, 10, 100);
+  plot.cropId = null;
+  plot.stage = 0;
+  plot.progress = 0;
+  plot.health = 100;
+  plot.hasPest = false;
+  plot.fertilizedUsed = false;
+  plot.fertBoostTicks = 0;
+  plot.healthSum = 0; plot.healthTicks = 0;
+  plot.weedSum = 0; plot.weedTicks = 0;
+  plot.pestTicks = 0;
+  // 잡초와 토양 수분은 그대로 유지 (현실적인 밭 상태 계승)
+}
+
+/* --------------------------------------------------------------------------
+   5. 메인 게임 루프
+   -------------------------------------------------------------------------- */
 
 function gameTick() {
-  const now =
-    Date.now();
-
-  const elapsedSeconds =
-    Math.max(
-      0,
-      Math.min(
-        (now -
-          lastTickTimestamp) /
-          1000,
-        20
-      )
-    );
-
-  lastTickTimestamp =
-    now;
-
-  if (
-    elapsedSeconds > 0
-  ) {
-    state.gameTime +=
-      elapsedSeconds *
-      GAME_MINUTES_PER_REAL_SECOND *
-      60 *
-      1000;
-
-    simulateField(
-      elapsedSeconds *
-        GAME_MINUTES_PER_REAL_SECOND /
-        60
-    );
-
-    updateWeather();
-
-    renderAll();
+  state.time.minutes += MINUTES_PER_TICK;
+  if (state.time.minutes >= DAY_MINUTES) {
+    state.time.minutes -= DAY_MINUTES;
+    advanceDay();
   }
 
-  /* 자동 저장 */
-  if (
-    now -
-      state.lastSavedAt >
-    30000
-  ) {
-    saveGame(false);
-  }
-}
+  const env = getEnv();
+  const ticks = MINUTES_PER_TICK / 30; // 기준 틱 단위 = 1
 
+  state.field.forEach((plot) => {
+    if (!plot) return; // 미개간 칸
+    updatePlotMoisture(plot, env, ticks);
+    if (plot.fertBoostTicks > 0) plot.fertBoostTicks -= 1;
 
-/* =========================================================
-   작물 시뮬레이션
-========================================================= */
-
-function simulateField(
-  gameHours
-) {
-  if (
-    gameHours <= 0
-  ) {
-    return;
-  }
-
-  const weather =
-    WEATHER_TYPES[
-      state.weather
-    ];
-
-  const env =
-    getEnvironment();
-
-  state.field.forEach(
-    cell => {
-      /*
-        빈 밭
-      */
-      if (
-        !cell.cropId ||
-        cell.dead
-      ) {
-        if (
-          !cell.cropId
-        ) {
-          cell.moisture =
-            Math.max(
-              0,
-              cell.moisture -
-                getMoistureLoss(
-                  env,
-                  weather,
-                  0.3
-                )
-            );
-
-          /*
-            빈 밭에도 잡초 발생
-          */
-          if (
-            !cell.weed &&
-            Math.random() <
-              gameHours /
-                72
-          ) {
-            cell.weed =
-              true;
-          }
-        }
-
-        return;
-      }
-
-      const crop =
-        CROPS[
-          cell.cropId
-        ];
-
-      /*
-        환경 점수
-      */
-      const tempScore =
-        rangeScore(
-          env.temperature,
-          crop.optimalTemp
-        );
-
-      const moistureScore =
-        rangeScore(
-          cell.moisture,
-          crop.optimalMoisture
-        );
-
-      const sunScore =
-        rangeScore(
-          env.sunPercent,
-          crop.optimalSun
-        );
-
-      const fertilityScore =
-        clamp(
-          cell.fertility /
-            100,
-          0,
-          1
-        );
-
-      /*
-        위협 및 건강도 페널티
-      */
-      const weedPenalty =
-        cell.weed
-          ? 0.72
-          : 1;
-
-      const pestPenalty =
-        cell.pests
-          ? 0.55
-          : 1;
-
-      const healthPenalty =
-        clamp(
-          cell.health /
-            100,
-          0,
-          1
-        );
-
-      /*
-        비료 효과
-      */
-      const fertilizerBoost =
-        cell.fertilized
-          ? 1.16
-          : 1;
-
-      /*
-        종합 성장 계수
-      */
-      const overall =
-        (
-          0.35 *
-            tempScore +
-          0.30 *
-            moistureScore +
-          0.18 *
-            sunScore +
-          0.17 *
-            fertilityScore
-        ) *
-        weedPenalty *
-        pestPenalty *
-        (
-          0.65 +
-          0.35 *
-            healthPenalty
-        ) *
-        fertilizerBoost;
-
-      /*
-        성장
-      */
-      const stageTarget =
-        cell.growth >= 100
-          ? 100
-          : cell.growth +
-            (
-              gameHours /
-              crop.growthHours
-            ) *
-            100 *
-            overall;
-
-      cell.growth =
-        clamp(
-          stageTarget,
-          0,
-          100
-        );
-
-      /*
-        수분 소모
-      */
-      cell.moisture =
-        clamp(
-          cell.moisture -
-            getMoistureLoss(
-              env,
-              weather,
-              1
-            ) *
-              gameHours,
-          0,
-          100
-        );
-
-      /*
-        비옥도 감소
-      */
-      cell.fertility =
-        clamp(
-          cell.fertility -
-            (
-              0.7 *
-              gameHours /
-              24
-            ),
-          0,
-          100
-        );
-
-      /*
-        건강도
-      */
-      let healthDelta =
-        0;
-
-      if (
-        cell.moisture <
-          crop
-            .optimalMoisture[0] -
-            18 ||
-        cell.moisture >
-          crop
-            .optimalMoisture[1] +
-            12
-      ) {
-        healthDelta -=
-          1.4 *
-          gameHours;
-      }
-
-      if (
-        tempScore <
-        0.5
-      ) {
-        healthDelta -=
-          0.9 *
-          gameHours;
-      }
-
-      if (
-        cell.pests
-      ) {
-        healthDelta -=
-          2.2 *
-          gameHours;
-      }
-
-      if (
-        cell.weed
-      ) {
-        healthDelta -=
-          0.75 *
-          gameHours;
-      }
-
-      /*
-        환경이 좋은 경우 건강도 회복
-      */
-      if (
-        overall > 0.78 &&
-        !cell.pests &&
-        !cell.weed
-      ) {
-        healthDelta +=
-          0.15 *
-          gameHours;
-      }
-
-      cell.health =
-        clamp(
-          cell.health +
-            healthDelta,
-          0,
-          100
-        );
-
-      /*
-        잡초 발생 확률
-      */
-      const weedChance =
-        (
-          0.018 +
-          (
-            100 -
-            cell.fertility
-          ) *
-            0.00012
-        ) *
-        gameHours;
-
-      /*
-        병해충 발생 확률
-      */
-      const pestChance =
-        (
-          0.009 +
-          (
-            35 -
-            cell.health
-          ) *
-            0.00018 +
-          (
-            env.humidity >
-            75
-              ? 0.01
-              : 0
-          )
-        ) *
-        gameHours;
-
-      if (
-        !cell.weed &&
-        Math.random() <
-          weedChance
-      ) {
-        cell.weed =
-          true;
-      }
-
-      if (
-        !cell.pests &&
-        Math.random() <
-          pestChance
-      ) {
-        cell.pests =
-          true;
-      }
-
-      /*
-        병해충 압력 증가
-      */
-      if (
-        cell.pests &&
-        Math.random() <
-          (
-            gameHours /
-            120
-          )
-      ) {
-        cell.diseasePressure =
-          clamp(
-            cell.diseasePressure +
-              2 +
-              Math.random() * 8,
-            0,
-            100
-          );
-      }
-
-      /*
-        건강도가 0이면 고사
-      */
-      if (
-        cell.health <=
-        0
-      ) {
-        cell.dead =
-          true;
-
-        cell.growth =
-          0;
-
-        cell.qualityScore =
-          0;
-      }
+    if (plot.cropId) {
+      const crop = CROPS[plot.cropId];
+      updatePlotWeeds(plot, ticks);
+      updatePlotHealth(plot, crop, env, ticks);
+      if (plot.cropId) updatePlotGrowth(plot, crop, env, MINUTES_PER_TICK);
     }
-  );
+  });
 
-  /*
-    비가 오면 토양 수분 증가
-  */
-  if (
-    weather.rain >
-    0.5
-  ) {
-    state.field.forEach(
-      cell => {
-        cell.moisture =
-          clamp(
-            cell.moisture +
-              9 *
-                gameHours,
-            0,
-            100
-          );
-      }
-    );
+  renderDashboard();
+  renderField();
+  if (currentPopupPlotIndex !== null) refreshPopup();
+
+  ticksSinceSave += 1;
+  if (ticksSinceSave >= 5) { ticksSinceSave = 0; saveState(); }
+}
+
+/* --------------------------------------------------------------------------
+   6. 레벨 / 경험치
+   -------------------------------------------------------------------------- */
+
+function gainExp(amount) {
+  if (amount <= 0) return;
+  state.exp += amount;
+  let leveledUp = false;
+  let unlockedNames = [];
+  while (state.exp >= expForLevel(state.level)) {
+    state.exp -= expForLevel(state.level);
+    state.level += 1;
+    leveledUp = true;
+    const bonus = state.level * 40;
+    state.money += bonus;
+    const newlyUnlocked = Object.values(CROPS).filter((c) => c.unlockLevel === state.level);
+    newlyUnlocked.forEach((c) => unlockedNames.push(`${c.emoji} ${c.name}`));
+  }
+  if (leveledUp) {
+    const unlockMsg = unlockedNames.length ? ` · 신규 작물 해금: ${unlockedNames.join(', ')}` : '';
+    showToast(`레벨 업! Lv.${state.level} 달성${unlockMsg}`, 'level');
   }
 }
 
+/* --------------------------------------------------------------------------
+   7. 플레이어 액션
+   -------------------------------------------------------------------------- */
 
-/* =========================================================
-   토양 수분 손실
-========================================================= */
-
-function getMoistureLoss(
-  env,
-  weather,
-  factor
-) {
-  const heatFactor =
-    Math.max(
-      0.4,
-      (
-        env.temperature -
-        10
-      ) /
-        20
-    );
-
-  const sunFactor =
-    Math.max(
-      0.35,
-      env.sunPercent /
-        100
-    );
-
-  const rainFactor =
-    weather.rain >
-    0.6
-      ? 0.2
-      : 1;
-
-  return (
-    0.28 *
-    heatFactor *
-    sunFactor *
-    rainFactor *
-    factor
-  );
+function buySeed(cropId) {
+  const crop = CROPS[cropId];
+  if (state.level < crop.unlockLevel) { showToast(`Lv.${crop.unlockLevel}에 해금되는 작물입니다.`, 'bad'); return; }
+  if (state.money < crop.seedPrice) { showToast('소지금이 부족합니다.', 'bad'); return; }
+  state.money -= crop.seedPrice;
+  state.inventory.seeds[cropId] = (state.inventory.seeds[cropId] || 0) + 1;
+  showToast(`${crop.name} 씨앗을 구매했습니다.`, 'good');
+  renderAll(); saveState();
 }
 
-
-/* =========================================================
-   환경
-========================================================= */
-
-function getEnvironment() {
-  const d =
-    new Date(
-      state.gameTime
-    );
-
-  const hour =
-    d.getHours() +
-    d.getMinutes() /
-      60;
-
-  const season =
-    getSeason(d);
-
-  const weather =
-    WEATHER_TYPES[
-      state.weather
-    ];
-
-  const daylight =
-    daylightFactor(
-      hour
-    );
-
-  const temperature =
-    weather.tempBase +
-    season.tempOffset +
-    dailyTemperatureWave(
-      hour
-    ) +
-    (
-      Math.random() *
-        0.5 -
-      0.25
-    );
-
-  const sunPercent =
-    weather.sun *
-    daylight;
-
-  const humidity =
-    weather.rain > 0.5
-      ? 80
-      : weather.name ===
-          '구름 많음'
-        ? 65
-        : 48;
-
-  return {
-    hour,
-    season,
-    temperature,
-    sunPercent,
-    humidity
-  };
+function buySupply(itemId) {
+  const item = SUPPLIES[itemId];
+  if (state.money < item.price) { showToast('소지금이 부족합니다.', 'bad'); return; }
+  state.money -= item.price;
+  state.inventory.supplies[itemId] = (state.inventory.supplies[itemId] || 0) + 1;
+  showToast(`${item.name}을(를) 구매했습니다.`, 'good');
+  renderAll(); saveState();
 }
 
-
-/* =========================================================
-   일조량
-========================================================= */
-
-function daylightFactor(
-  hour
-) {
-  if (
-    hour < 6 ||
-    hour > 19
-  ) {
-    return 0.05;
-  }
-
-  const peak =
-    12.5;
-
-  const distance =
-    Math.abs(
-      hour - peak
-    ) /
-    6.5;
-
-  return clamp(
-    1 -
-      distance *
-        0.85,
-    0.08,
-    1
-  );
+function buyToolUpgrade(toolId) {
+  const tool = TOOLS[toolId];
+  const levelKey = toolId + 'Level';
+  const currentLevel = state.tools[levelKey];
+  if (currentLevel >= tool.levels.length) { showToast('이미 최고 단계입니다.', 'bad'); return; }
+  const nextDef = tool.levels[currentLevel]; // 0-index → 현재 레벨이 곧 다음 단계 인덱스
+  if (state.money < nextDef.cost) { showToast('소지금이 부족합니다.', 'bad'); return; }
+  state.money -= nextDef.cost;
+  state.tools[levelKey] = nextDef.level;
+  showToast(`${tool.name}이(가) Lv.${nextDef.level}로 업그레이드되었습니다!`, 'good');
+  renderAll(); saveState();
 }
 
-
-/* =========================================================
-   하루 온도 변화
-========================================================= */
-
-function dailyTemperatureWave(
-  hour
-) {
-  return (
-    Math.sin(
-      (
-        (hour - 7) /
-          24
-      ) *
-        Math.PI *
-        2
-    ) * 3
-  );
+function expandField() {
+  if (state.unlockedCount >= MAX_PLOTS) { showToast('더 이상 밭을 확장할 수 없습니다.', 'bad'); return; }
+  const cost = computeExpandCost(state.unlockedCount);
+  if (state.money < cost) { showToast('소지금이 부족합니다.', 'bad'); return; }
+  state.money -= cost;
+  state.field[state.unlockedCount] = createEmptyPlot(state.unlockedCount);
+  state.unlockedCount += 1;
+  showToast(`밭을 개간했습니다! (총 ${state.unlockedCount}칸)`, 'good');
+  closePopup();
+  renderAll(); saveState();
 }
 
-
-/* =========================================================
-   계절
-========================================================= */
-
-function getSeason(
-  date
-) {
-  const month =
-    date.getMonth() +
-    1;
-
-  return (
-    SEASONS.find(
-      season =>
-        season.months.includes(
-          month
-        )
-    ) ||
-    SEASONS[0]
-  );
+function plantSeed(plotIndex, cropId) {
+  const plot = state.field[plotIndex];
+  if (!plot || plot.cropId) return;
+  if (!state.inventory.seeds[cropId]) { showToast('보유한 씨앗이 없습니다.', 'bad'); return; }
+  state.inventory.seeds[cropId] -= 1;
+  plot.cropId = cropId;
+  plot.stage = 0;
+  plot.progress = 0;
+  plot.health = 100;
+  plot.hasPest = false;
+  plot.fertilizedUsed = false;
+  plot.fertBoostTicks = 0;
+  plot.healthSum = 0; plot.healthTicks = 0;
+  plot.weedSum = 0; plot.weedTicks = 0;
+  plot.pestTicks = 0;
+  showToast(`${CROPS[cropId].name} 씨앗을 심었습니다.`, 'good');
+  renderAll(); saveState();
+  openPlotPopup(plotIndex);
 }
 
+function waterPlot(plotIndex) {
+  const plot = state.field[plotIndex];
+  if (!plot) return;
+  const amount = TOOLS.wateringCan.levels[state.tools.wateringCanLevel - 1].moistureAdd;
+  plot.moisture = clamp(plot.moisture + amount, 0, 100);
+  showToast('물을 주었습니다.', 'good');
+  renderAll();
+}
 
-/* =========================================================
-   날씨 갱신
-========================================================= */
+function bulkWaterAll() {
+  const toolDef = TOOLS.wateringCan.levels[state.tools.wateringCanLevel - 1];
+  if (!toolDef.bulkWater) { showToast('물뿌리개를 업그레이드하면 전체 물주기를 사용할 수 있습니다.', 'bad'); return; }
+  if (toolDef.bulkCooldownDays > 0 && state.lastBulkWaterDay === state.time.day) {
+    showToast('전체 물주기는 오늘 이미 사용했습니다.', 'bad'); return;
+  }
+  state.field.forEach((plot) => { if (plot) plot.moisture = clamp(plot.moisture + toolDef.moistureAdd, 0, 100); });
+  state.lastBulkWaterDay = state.time.day;
+  showToast('보유한 모든 밭에 물을 주었습니다.', 'good');
+  renderAll(); saveState();
+}
 
-function updateWeather(
-  force = false
-) {
-  const date =
-    new Date(
-      state.gameTime
-    );
+function getAdjacentIndices(index) {
+  const result = [];
+  const col = index % GRID_COLS;
+  if (col > 0) result.push(index - 1);
+  if (col < GRID_COLS - 1) result.push(index + 1);
+  if (index - GRID_COLS >= 0) result.push(index - GRID_COLS);
+  if (index + GRID_COLS < MAX_PLOTS) result.push(index + GRID_COLS);
+  return result;
+}
 
-  const dayKey =
-    date
-      .toISOString()
-      .slice(
-        0,
-        10
-      );
+function removeWeeds(plotIndex) {
+  const plot = state.field[plotIndex];
+  if (!plot) return;
+  const hadWeeds = plot.weedLevel > 8;
+  plot.weedLevel = 0;
 
-  if (
-    !force &&
-    state.weatherSeedDay ===
-      dayKey
-  ) {
-    return;
+  const hoeDef = TOOLS.hoe.levels[state.tools.hoeLevel - 1];
+  if (hoeDef.adjacentClearRatio > 0) {
+    getAdjacentIndices(plotIndex).forEach((i) => {
+      const adj = state.field[i];
+      if (adj && adj.cropId) adj.weedLevel = clamp(adj.weedLevel * (1 - hoeDef.adjacentClearRatio), 0, 100);
+    });
   }
 
-  const hour =
-    date.getHours();
+  showToast('잡초를 제거했습니다.', 'good');
+  if (hadWeeds) gainExp(EXP_REWARD.weed);
+  renderAll();
+}
 
-  if (
-    force &&
-    state.weatherSeedDay ===
-      dayKey
-  ) {
-    return;
-  }
+function treatPest(plotIndex) {
+  const plot = state.field[plotIndex];
+  if (!plot) return;
+  if (!state.inventory.supplies.pesticide) { showToast('방제약이 없습니다. 상점에서 구매하세요.', 'bad'); return; }
+  state.inventory.supplies.pesticide -= 1;
+  plot.hasPest = false;
+  plot.health = clamp(plot.health + 15, 0, 100);
+  showToast('병해충을 방제했습니다.', 'good');
+  gainExp(EXP_REWARD.pest);
+  renderAll(); saveState();
+}
 
-  const roll =
-    Math.random();
+function fertilizePlot(plotIndex) {
+  const plot = state.field[plotIndex];
+  if (!plot) return;
+  if (plot.fertilizedUsed) { showToast('이미 이번 작물에 비료를 주었습니다.', 'bad'); return; }
+  if (!state.inventory.supplies.fertilizer) { showToast('비료가 없습니다. 상점에서 구매하세요.', 'bad'); return; }
+  state.inventory.supplies.fertilizer -= 1;
+  plot.fertility = clamp(plot.fertility + 25, 0, 100);
+  plot.fertilizedUsed = true;
+  plot.fertBoostTicks = 96; // 약 2일간 성장 부스트
+  showToast('비료를 주었습니다.', 'good');
+  gainExp(EXP_REWARD.fertilize);
+  renderAll(); saveState();
+}
 
-  if (
-    roll < 0.5
-  ) {
-    state.weather =
-      'sunny';
-  }
+function harvestPlot(plotIndex) {
+  const plot = state.field[plotIndex];
+  if (!plot || plot.stage < 4) return;
+  const crop = CROPS[plot.cropId];
 
-  else if (
-    roll < 0.74
-  ) {
-    state.weather =
-      'cloudy';
-  }
+  const avgHealth = plot.healthTicks > 0 ? plot.healthSum / plot.healthTicks : 100;
+  const avgWeed = plot.weedTicks > 0 ? plot.weedSum / plot.weedTicks : 0;
+  const fertScore = plot.fertilizedUsed ? 100 : 60;
+  const pestPenalty = plot.pestTicks * 1.2;
+  const qualityScore = clamp(avgHealth * 0.55 + (100 - avgWeed) * 0.25 + fertScore * 0.2 - pestPenalty, 0, 100);
+  const grade = gradeFromScore(qualityScore);
+  const yieldQty = randInt(2, 4);
 
-  else if (
-    roll < 0.91
-  ) {
-    state.weather =
-      'rainy';
-  }
+  const key = `${crop.id}_${grade}`;
+  state.inventory.harvest[key] = (state.inventory.harvest[key] || 0) + yieldQty;
 
-  else {
-    state.weather =
-      'windy';
-  }
+  const gradeExpMult = { '특': 3, '상': 2, '중': 1.4, '하': 1 }[grade];
+  const exp = Math.round((8 + crop.seedPrice * 0.5) * gradeExpMult);
 
-  state.weatherSeedDay =
-    dayKey;
+  showToast(`${crop.name} 수확! 등급 [${grade}] × ${yieldQty}`, 'good');
+  resetPlotAfterCrop(plot, true);
+  gainExp(exp);
+  closePopup();
+  renderAll(); saveState();
+}
 
-  /*
-    야간에 추가 강수
-  */
-  if (
-    hour >= 0 &&
-    hour < 5 &&
-    state.weather ===
-      'sunny' &&
-    Math.random() <
-      0.08
-  ) {
-    state.weather =
-      'rainy';
+function sellHarvestStack(key) {
+  const qty = state.inventory.harvest[key];
+  if (!qty) return;
+  const [cropId, grade] = key.split('_');
+  const crop = CROPS[cropId];
+  const total = marketUnitPrice(crop, grade) * qty;
+  state.money += total;
+  delete state.inventory.harvest[key];
+  showToast(`${crop.name}(${grade}) ${qty}개를 ${formatMoney(total)}에 판매했습니다.`, 'good');
+  renderAll(); saveState();
+}
+
+function resetGame() {
+  const ok = window.confirm('정말 처음부터 다시 시작할까요? 모든 진행 상황이 삭제됩니다.');
+  if (!ok) return;
+  localStorage.removeItem(SAVE_KEY);
+  state = createDefaultState();
+  closePopup();
+  renderAll(); saveState();
+  showToast('새 농장을 시작합니다.', 'good');
+}
+
+/* --------------------------------------------------------------------------
+   8. 렌더링 — 대시보드
+   -------------------------------------------------------------------------- */
+
+function renderDashboard() {
+  document.getElementById('stat-money').textContent = formatMoney(state.money);
+  document.getElementById('stat-level').textContent = `Lv.${state.level}`;
+  document.getElementById('stat-season').textContent = getCurrentSeason().name;
+  document.getElementById('stat-day').textContent = `${state.time.day}일차 (${state.time.seasonDay}/${SEASON_DAYS})`;
+
+  const weather = WEATHER_TYPES[state.time.weatherId];
+  document.getElementById('stat-weather-icon').textContent = weather.icon;
+  document.getElementById('stat-weather-name').textContent = weather.name;
+  document.getElementById('stat-temp').textContent = `${state.time.temperature}°C`;
+  document.getElementById('stat-time').textContent = formatTime(state.time.minutes);
+
+  const need = expForLevel(state.level);
+  document.getElementById('exp-bar-fill').style.width = `${clamp((state.exp / need) * 100, 0, 100)}%`;
+  document.getElementById('exp-bar-label').textContent = `${Math.floor(state.exp)} / ${need} EXP`;
+
+  const bulkBtn = document.getElementById('btn-bulk-water');
+  const toolDef = TOOLS.wateringCan.levels[state.tools.wateringCanLevel - 1];
+  if (toolDef.bulkWater) {
+    bulkBtn.classList.remove('hidden');
+    const onCooldown = toolDef.bulkCooldownDays > 0 && state.lastBulkWaterDay === state.time.day;
+    bulkBtn.disabled = onCooldown;
+    bulkBtn.textContent = onCooldown ? '🚿 전체 물주기 (내일 다시)' : '🚿 전체 물주기';
+  } else {
+    bulkBtn.classList.add('hidden');
   }
 }
 
+/* --------------------------------------------------------------------------
+   9. 렌더링 — 밭 그리드 (확장 / 잠금 포함)
+   -------------------------------------------------------------------------- */
 
-/* =========================================================
-   전체 렌더
-========================================================= */
+function stageIcon(crop, stage) {
+  if (stage === 0) return '🌰';
+  if (stage === 1) return '🌱';
+  if (stage === 2) return '🌿';
+  return crop.emoji;
+}
+
+function renderField() {
+  const grid = document.getElementById('field-grid');
+  grid.innerHTML = '';
+  document.getElementById('field-count-label').textContent = `(${state.unlockedCount} / ${MAX_PLOTS}칸)`;
+
+  for (let i = 0; i < MAX_PLOTS; i++) {
+    const plot = state.field[i];
+    const cell = document.createElement('div');
+
+    if (!plot) {
+      const isNext = i === state.unlockedCount;
+      cell.className = 'plot is-locked' + (isNext ? '' : ' is-far');
+      cell.innerHTML = `<div class="plot-lock-icon">🔒</div>` + (isNext ? `<div class="plot-lock-cost">${formatMoney(computeExpandCost(state.unlockedCount))}</div>` : '');
+      cell.addEventListener('click', (e) => openPlotPopup(i, e));
+      grid.appendChild(cell);
+      continue;
+    }
+
+    cell.className = 'plot' + (plot.cropId ? '' : ' is-empty') + (plot.moisture > 75 ? ' is-wet' : '');
+    cell.dataset.index = plot.id;
+
+    const badges = document.createElement('div');
+    badges.className = 'plot-badges';
+    if (plot.cropId && plot.weedLevel > 30) badges.innerHTML += '<span title="잡초">🍃</span>';
+    if (plot.cropId && plot.hasPest) badges.innerHTML += '<span title="병해충">🐛</span>';
+    cell.appendChild(badges);
+
+    if (plot.stage === 4) {
+      const ready = document.createElement('span');
+      ready.className = 'plot-badge-ready';
+      ready.textContent = '수확!';
+      cell.appendChild(ready);
+    }
+
+    if (plot.cropId) {
+      const crop = CROPS[plot.cropId];
+      const icon = document.createElement('div');
+      icon.className = 'plot-crop-icon';
+      icon.textContent = stageIcon(crop, plot.stage);
+      cell.appendChild(icon);
+
+      const label = document.createElement('div');
+      label.className = 'plot-stage-label';
+      label.textContent = STAGE_NAMES[plot.stage];
+      cell.appendChild(label);
+
+      const bars = document.createElement('div');
+      bars.className = 'plot-bars';
+      bars.innerHTML = `
+        <div class="mini-bar"><div class="mini-bar-fill moisture" style="width:${plot.moisture}%"></div></div>
+        <div class="mini-bar"><div class="mini-bar-fill health${plot.health < 40 ? ' low' : ''}" style="width:${plot.health}%"></div></div>
+        ${plot.stage < 4 ? `<div class="mini-bar"><div class="mini-bar-fill progress" style="width:${Math.min(100, (plot.progress / crop.stageDuration) * 100)}%"></div></div>` : ''}
+      `;
+      cell.appendChild(bars);
+    } else {
+      const bars = document.createElement('div');
+      bars.className = 'plot-bars';
+      bars.innerHTML = `<div class="mini-bar"><div class="mini-bar-fill moisture" style="width:${plot.moisture}%"></div></div>`;
+      cell.appendChild(bars);
+    }
+
+    cell.addEventListener('click', (e) => openPlotPopup(plot.id, e));
+    grid.appendChild(cell);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   10. 렌더링 — 상점 / 인벤토리 / 시세
+   -------------------------------------------------------------------------- */
+
+function renderMarketTicker() {
+  const el = document.getElementById('market-ticker');
+  el.innerHTML = '';
+  Object.values(CROPS).forEach((crop) => {
+    if (state.level < crop.unlockLevel) return;
+    const mult = state.market[crop.id] || 1;
+    const trend = state.marketTrend[crop.id] || 'flat';
+    const arrow = trend === 'up' ? '▲' : trend === 'down' ? '▼' : '—';
+    const pct = Math.round((mult - 1) * 100);
+    const pctLabel = pct > 0 ? `+${pct}%` : `${pct}%`;
+    const row = document.createElement('div');
+    row.className = 'market-row';
+    row.innerHTML = `
+      <span class="m-name">${crop.emoji} ${crop.name}</span>
+      <span class="m-trend ${trend}">${arrow} ${pctLabel}</span>
+    `;
+    el.appendChild(row);
+  });
+}
+
+function renderShop() {
+  renderMarketTicker();
+
+  const seedsEl = document.getElementById('shop-seeds');
+  seedsEl.innerHTML = '';
+  Object.values(CROPS).forEach((crop) => {
+    const locked = state.level < crop.unlockLevel;
+    const owned = state.inventory.seeds[crop.id] || 0;
+    const card = document.createElement('div');
+    card.className = 'item-card' + (locked ? ' is-locked-item' : '');
+    if (locked) {
+      card.innerHTML = `
+        <span class="item-icon">🔒</span>
+        <span class="item-info">
+          <span class="item-name">${crop.emoji} ${crop.name} 씨앗</span>
+          <span class="item-sub">${crop.hint}</span>
+        </span>
+        <span class="lock-tag">Lv.${crop.unlockLevel} 해금</span>
+      `;
+    } else {
+      card.innerHTML = `
+        <span class="item-icon">${crop.emoji}</span>
+        <span class="item-info">
+          <span class="item-name">${crop.name} 씨앗</span>
+          <span class="item-sub">${crop.hint} · 보유 ${owned}개</span>
+        </span>
+        <button class="btn-buy" ${state.money < crop.seedPrice ? 'disabled' : ''}>${crop.seedPrice}원</button>
+      `;
+      card.querySelector('button').addEventListener('click', () => buySeed(crop.id));
+    }
+    seedsEl.appendChild(card);
+  });
+
+  const suppliesEl = document.getElementById('shop-supplies');
+  suppliesEl.innerHTML = '';
+  Object.values(SUPPLIES).forEach((item) => {
+    const owned = state.inventory.supplies[item.id] || 0;
+    const card = document.createElement('div');
+    card.className = 'item-card';
+    card.innerHTML = `
+      <span class="item-icon">${item.icon}</span>
+      <span class="item-info">
+        <span class="item-name">${item.name}</span>
+        <span class="item-sub">${item.desc} · 보유 ${owned}개</span>
+      </span>
+      <button class="btn-buy" ${state.money < item.price ? 'disabled' : ''}>${item.price}원</button>
+    `;
+    card.querySelector('button').addEventListener('click', () => buySupply(item.id));
+    suppliesEl.appendChild(card);
+  });
+
+  const toolsEl = document.getElementById('shop-tools');
+  toolsEl.innerHTML = '';
+  Object.values(TOOLS).forEach((tool) => {
+    const levelKey = tool.id + 'Level';
+    const currentLevel = state.tools[levelKey];
+    const maxed = currentLevel >= tool.levels.length;
+    const dots = tool.levels.map((_, idx) => `<span class="tool-level-dot${idx < currentLevel ? ' is-filled' : ''}"></span>`).join('');
+    const card = document.createElement('div');
+    card.className = 'item-card';
+    if (maxed) {
+      card.innerHTML = `
+        <span class="item-icon">${tool.icon}</span>
+        <span class="item-info">
+          <span class="item-name">${tool.name} <span class="tool-level-dots">${dots}</span></span>
+          <span class="item-sub">최고 단계 달성 · ${tool.levels[currentLevel - 1].desc}</span>
+        </span>
+      `;
+    } else {
+      const nextDef = tool.levels[currentLevel];
+      card.innerHTML = `
+        <span class="item-icon">${tool.icon}</span>
+        <span class="item-info">
+          <span class="item-name">${tool.name} <span class="tool-level-dots">${dots}</span> Lv.${currentLevel}→${nextDef.level}</span>
+          <span class="item-sub">${nextDef.desc}</span>
+        </span>
+        <button class="btn-buy" ${state.money < nextDef.cost ? 'disabled' : ''}>${nextDef.cost}원</button>
+      `;
+      card.querySelector('button').addEventListener('click', () => buyToolUpgrade(tool.id));
+    }
+    toolsEl.appendChild(card);
+  });
+}
+
+function renderInventory() {
+  const seedsEl = document.getElementById('inv-seeds');
+  const ownedSeeds = Object.entries(state.inventory.seeds).filter(([, c]) => c > 0);
+  seedsEl.innerHTML = ownedSeeds.length ? '' : '<div class="item-empty">보유한 씨앗이 없습니다.</div>';
+  ownedSeeds.forEach(([cropId, count]) => {
+    const crop = CROPS[cropId];
+    const card = document.createElement('div');
+    card.className = 'item-card';
+    card.innerHTML = `
+      <span class="item-icon">${crop.emoji}</span>
+      <span class="item-info">
+        <span class="item-name">${crop.name} 씨앗</span>
+        <span class="item-sub">보유 수량: ${count}개</span>
+      </span>
+    `;
+    seedsEl.appendChild(card);
+  });
+
+  const suppliesEl = document.getElementById('inv-supplies');
+  const ownedSupplies = Object.entries(state.inventory.supplies).filter(([, c]) => c > 0);
+  suppliesEl.innerHTML = ownedSupplies.length ? '' : '<div class="item-empty">보유한 농자재가 없습니다.</div>';
+  ownedSupplies.forEach(([itemId, count]) => {
+    const item = SUPPLIES[itemId];
+    const card = document.createElement('div');
+    card.className = 'item-card';
+    card.innerHTML = `
+      <span class="item-icon">${item.icon}</span>
+      <span class="item-info">
+        <span class="item-name">${item.name}</span>
+        <span class="item-sub">보유 수량: ${count}개</span>
+      </span>
+    `;
+    suppliesEl.appendChild(card);
+  });
+
+  const harvestEl = document.getElementById('inv-harvest');
+  const harvestKeys = Object.keys(state.inventory.harvest);
+  harvestEl.innerHTML = harvestKeys.length ? '' : '<div class="item-empty">수확한 작물이 없습니다.</div>';
+  harvestKeys.forEach((key) => {
+    const [cropId, grade] = key.split('_');
+    const crop = CROPS[cropId];
+    const qty = state.inventory.harvest[key];
+    const unitPrice = marketUnitPrice(crop, grade);
+    const card = document.createElement('div');
+    card.className = 'item-card';
+    card.innerHTML = `
+      <span class="item-icon">${crop.emoji}</span>
+      <span class="item-info">
+        <span class="item-name">${crop.name} <span class="grade-tag grade-${grade}">${grade}</span></span>
+        <span class="item-sub">${qty}개 · 개당 ${unitPrice}원</span>
+      </span>
+      <button class="btn-sell">전량 판매</button>
+    `;
+    card.querySelector('button').addEventListener('click', () => sellHarvestStack(key));
+    harvestEl.appendChild(card);
+  });
+}
 
 function renderAll() {
   renderDashboard();
-
   renderField();
-
-  renderMarket();
-
-  renderFieldSummary();
-
-  if (
-    !document
-      .getElementById(
-        'inventory-modal'
-      )
-      .classList.contains(
-        'hidden'
-      )
-  ) {
-    renderInventory();
-  }
-
-  if (
-    selectedCellIndex !==
-      null &&
-    !document
-      .getElementById(
-        'cell-modal'
-      )
-      .classList.contains(
-        'hidden'
-      )
-  ) {
-    renderCellModal(
-      selectedCellIndex
-    );
-  }
-}
-
-
-/* =========================================================
-   대시보드
-========================================================= */
-
-function renderDashboard() {
-  const env =
-    getEnvironment();
-
-  const date =
-    new Date(
-      state.gameTime
-    );
-
-  document.getElementById(
-    'money'
-  ).textContent =
-    formatMoney(
-      state.money
-    );
-
-  document.getElementById(
-    'game-date'
-  ).textContent =
-    `${
-      date.getMonth() + 1
-    }월 ${
-      date.getDate()
-    }일 · ${
-      env.season.name
-    }`;
-
-  document.getElementById(
-    'weather'
-  ).textContent =
-    `${
-      WEATHER_TYPES[
-        state.weather
-      ].icon
-    } ${
-      WEATHER_TYPES[
-        state.weather
-      ].name
-    }`;
-
-  document.getElementById(
-    'temperature'
-  ).textContent =
-    `${env.temperature.toFixed(
-      1
-    )}°C · 일조 ${Math.round(
-      env.sunPercent
-    )}%`;
-
-  document.getElementById(
-    'game-time'
-  ).textContent =
-    formatTime(date);
-}
-
-
-/* =========================================================
-   밭 렌더
-========================================================= */
-
-function renderField() {
-  const grid =
-    document.getElementById(
-      'field-grid'
-    );
-
-  grid.innerHTML = '';
-
-  state.field.forEach(
-    (
-      cell,
-      index
-    ) => {
-      const div =
-        document.createElement(
-          'div'
-        );
-
-      div.className =
-        `field-cell${
-          cell.dead
-            ? ' dead'
-            : ''
-        }`;
-
-      div.addEventListener(
-        'click',
-        () =>
-          openCellModal(
-            index
-          )
-      );
-
-      const crop =
-        cell.cropId
-          ? CROPS[
-              cell.cropId
-            ]
-          : null;
-
-      const statusClass =
-        getCellStatusClass(
-          cell,
-          crop
-        );
-
-      const moistureLabel =
-        cell.moisture >=
-        60
-          ? '수분 충분'
-          : cell.moisture >=
-            35
-            ? '수분 보통'
-            : '건조';
-
-      div.innerHTML = `
-        <div class="cell-top">
-          <span class="cell-number">
-            밭 ${index + 1}
-          </span>
-
-          <span
-            class="cell-status-dot ${statusClass}"
-          ></span>
-        </div>
-
-        <div class="cell-plant">
-          ${
-            cell.dead
-              ? `
-                <div class="plant-emoji">
-                  🥀
-                </div>
-
-                <div class="plant-name">
-                  고사함
-                </div>
-              `
-              : crop
-                ? `
-                  <div class="plant-emoji">
-                    ${crop.icon}
-                  </div>
-
-                  <div class="plant-name">
-                    ${crop.name}
-                  </div>
-                `
-                : `
-                  <div class="empty-emoji">
-                    🟫
-                  </div>
-
-                  <div class="plant-name">
-                    빈 밭
-                  </div>
-                `
-          }
-        </div>
-
-        ${
-          crop &&
-          !cell.dead
-            ? `
-              <div class="progress-wrap">
-
-                <div class="progress-label">
-                  <span>
-                    ${getGrowthStage(
-                      cell.growth
-                    )}
-                  </span>
-
-                  <span>
-                    ${cell.growth.toFixed(
-                      0
-                    )}%
-                  </span>
-                </div>
-
-                <div class="progress-bar">
-                  <div
-                    class="progress-fill"
-                    style="width:${cell.growth}%"
-                  ></div>
-                </div>
-
-                <div class="cell-tags">
-
-                  <span class="tag ${
-                    cell.moisture <
-                    crop.optimalMoisture[0]
-                      ? 'dry'
-                      : 'water'
-                  }">
-                    💧 ${moistureLabel}
-                  </span>
-
-                  ${
-                    cell.weed
-                      ? `
-                        <span class="tag weed">
-                          🌿 잡초
-                        </span>
-                      `
-                      : ''
-                  }
-
-                  ${
-                    cell.pests
-                      ? `
-                        <span class="tag pest">
-                          🐛 병해충
-                        </span>
-                      `
-                      : ''
-                  }
-
-                  ${
-                    cell.fertilized
-                      ? `
-                        <span class="tag">
-                          ✨ 비료
-                        </span>
-                      `
-                      : ''
-                  }
-
-                </div>
-              </div>
-            `
-            : cell.dead
-              ? `
-                <div class="cell-tags">
-                  <span class="tag dead">
-                    작물 회수 필요
-                  </span>
-                </div>
-              `
-              : ''
-        }
-      `;
-
-      grid.appendChild(
-        div
-      );
-    }
-  );
-}
-
-
-/* =========================================================
-   밭 상태 색상
-========================================================= */
-
-function getCellStatusClass(
-  cell,
-  crop
-) {
-  if (
-    cell.dead
-  ) {
-    return 'bad';
-  }
-
-  if (!crop) {
-    return 'good';
-  }
-
-  if (
-    cell.pests ||
-    cell.health < 45
-  ) {
-    return 'bad';
-  }
-
-  if (
-    cell.weed ||
-    cell.moisture <
-      crop.optimalMoisture[0] ||
-    cell.moisture >
-      crop.optimalMoisture[1]
-  ) {
-    return 'warn';
-  }
-
-  return 'good';
-}
-
-
-/* =========================================================
-   상점
-========================================================= */
-
-function renderMarket() {
-  document
-    .querySelectorAll(
-      '.tab-btn'
-    )
-    .forEach(
-      btn =>
-        btn.classList.toggle(
-          'active',
-          btn.dataset.tab ===
-            currentMarketTab
-        )
-    );
-
-  document
-    .getElementById(
-      'market-buy'
-    )
-    .classList.toggle(
-      'active',
-      currentMarketTab ===
-        'buy'
-    );
-
-  document
-    .getElementById(
-      'market-sell'
-    )
-    .classList.toggle(
-      'active',
-      currentMarketTab ===
-        'sell'
-    );
-
-  document.getElementById(
-    'market-buy'
-  ).innerHTML =
-    `<div class="shop-list">
-      ${renderBuyItems()}
-    </div>`;
-
-  document.getElementById(
-    'market-sell'
-  ).innerHTML =
-    `<div class="shop-list">
-      ${renderSellItems()}
-    </div>`;
-
-  document
-    .querySelectorAll(
-      '[data-buy]'
-    )
-    .forEach(
-      btn =>
-        btn.addEventListener(
-          'click',
-          () =>
-            buyItem(
-              btn.dataset.buy
-            )
-        )
-    );
-
-  document
-    .querySelectorAll(
-      '[data-sell]'
-    )
-    .forEach(
-      btn =>
-        btn.addEventListener(
-          'click',
-          () =>
-            sellHarvest(
-              btn.dataset.sell
-            )
-        )
-    );
-}
-
-
-/* =========================================================
-   구매 목록
-========================================================= */
-
-function renderBuyItems() {
-  const cropItems =
-    Object.values(
-      CROPS
-    )
-      .map(
-        crop => {
-          const count =
-            state.inventory
-              .seeds[
-                crop.id
-              ] || 0;
-
-          return `
-            <div class="shop-item">
-
-              <div class="item-icon">
-                ${crop.icon}
-              </div>
-
-              <div>
-                <div class="item-name">
-                  ${crop.name} 씨앗
-                </div>
-
-                <div class="item-meta">
-                  적정 ${
-                    crop.optimalTemp[0]
-                  }~${
-                    crop.optimalTemp[1]
-                  }°C · ${
-                    crop.growthHours
-                  }시간 · 보유 ${count}
-                </div>
-              </div>
-
-              <div class="item-actions">
-
-                <div class="price">
-                  ${formatMoney(
-                    crop.seedPrice
-                  )}
-                </div>
-
-                <button
-                  class="small-btn"
-                  data-buy="seed:${crop.id}"
-                >
-                  구매
-                </button>
-
-              </div>
-            </div>
-          `;
-        }
-      )
-      .join('');
-
-  const inputItems =
-    Object.values(
-      INPUT_ITEMS
-    )
-      .map(
-        item => {
-          const count =
-            state.inventory
-              .inputs[
-                item.id
-              ] || 0;
-
-          return `
-            <div class="shop-item">
-
-              <div class="item-icon">
-                ${item.icon}
-              </div>
-
-              <div>
-                <div class="item-name">
-                  ${item.name}
-                </div>
-
-                <div class="item-meta">
-                  관리 자원 · 보유 ${count}
-                </div>
-              </div>
-
-              <div class="item-actions">
-
-                <div class="price">
-                  ${formatMoney(
-                    item.buyPrice
-                  )}
-                </div>
-
-                <button
-                  class="small-btn"
-                  data-buy="input:${item.id}"
-                >
-                  구매
-                </button>
-
-              </div>
-            </div>
-          `;
-        }
-      )
-      .join('');
-
-  return (
-    cropItems +
-    inputItems
-  );
-}
-
-
-/* =========================================================
-   판매 목록
-========================================================= */
-
-function renderSellItems() {
-  return Object.values(
-    CROPS
-  )
-    .map(
-      crop => {
-        const count =
-          state.inventory
-            .harvest[
-              crop.id
-            ] || 0;
-
-        return `
-          <div class="shop-item">
-
-            <div class="item-icon">
-              ${crop.icon}
-            </div>
-
-            <div>
-              <div class="item-name">
-                ${crop.name} 수확물
-              </div>
-
-              <div class="item-meta">
-                기본 판매가
-                ${formatMoney(
-                  crop.sellPrice
-                )}
-                / 개 · 보유 ${count}
-              </div>
-            </div>
-
-            <div class="item-actions">
-
-              <div class="price">
-                1개 ×
-                ${formatMoney(
-                  crop.sellPrice
-                )}
-              </div>
-
-              <button
-                class="small-btn sell"
-                data-sell="${crop.id}"
-                ${
-                  count <= 0
-                    ? 'disabled'
-                    : ''
-                }
-              >
-                판매
-              </button>
-
-            </div>
-          </div>
-        `;
-      }
-    )
-    .join('');
-}
-
-
-/* =========================================================
-   밭 현황
-========================================================= */
-
-function renderFieldSummary() {
-  const occupied =
-    state.field.filter(
-      c =>
-        c.cropId &&
-        !c.dead
-    ).length;
-
-  const mature =
-    state.field.filter(
-      c =>
-        c.cropId &&
-        !c.dead &&
-        c.growth >=
-          100
-    ).length;
-
-  const dry =
-    state.field.filter(
-      c =>
-        c.cropId &&
-        !c.dead &&
-        c.moisture <
-          35
-    ).length;
-
-  const threats =
-    state.field.filter(
-      c =>
-        c.cropId &&
-        !c.dead &&
-        (
-          c.weed ||
-          c.pests
-        )
-    ).length;
-
-  const healthyCells =
-    state.field.filter(
-      c =>
-        c.cropId &&
-        !c.dead
-    );
-
-  const avgHealth =
-    occupied
-      ? Math.round(
-          healthyCells.reduce(
-            (
-              sum,
-              c
-            ) =>
-              sum +
-              c.health,
-            0
-          ) /
-            occupied
-        )
-      : 0;
-
-  document.getElementById(
-    'field-summary'
-  ).innerHTML = `
-    <div class="summary-box">
-      <span>재배 중</span>
-      <strong>
-        ${occupied}/${FIELD_SIZE}
-      </strong>
-    </div>
-
-    <div class="summary-box">
-      <span>성숙·수확 가능</span>
-      <strong>
-        ${mature}
-      </strong>
-    </div>
-
-    <div class="summary-box">
-      <span>건조한 칸</span>
-      <strong>
-        ${dry}
-      </strong>
-    </div>
-
-    <div class="summary-box">
-      <span>위협 발생 칸</span>
-      <strong>
-        ${threats}
-      </strong>
-    </div>
-
-    <div class="summary-box">
-      <span>평균 건강도</span>
-      <strong>
-        ${avgHealth}%
-      </strong>
-    </div>
-
-    <div class="summary-box">
-      <span>비료 사용 칸</span>
-      <strong>
-        ${
-          state.field.filter(
-            c =>
-              c.fertilized
-          ).length
-        }
-      </strong>
-    </div>
-  `;
-}
-
-
-/* =========================================================
-   밭 상세 모달
-========================================================= */
-
-function openCellModal(
-  index
-) {
-  selectedCellIndex =
-    index;
-
-  document
-    .getElementById(
-      'cell-modal'
-    )
-    .classList.remove(
-      'hidden'
-    );
-
-  document
-    .getElementById(
-      'cell-modal'
-    )
-    .setAttribute(
-      'aria-hidden',
-      'false'
-    );
-
-  renderCellModal(
-    index
-  );
-}
-
-
-function closeCellModal() {
-  selectedCellIndex =
-    null;
-
-  document
-    .getElementById(
-      'cell-modal'
-    )
-    .classList.add(
-      'hidden'
-    );
-
-  document
-    .getElementById(
-      'cell-modal'
-    )
-    .setAttribute(
-      'aria-hidden',
-      'true'
-    );
-}
-
-
-/* =========================================================
-   밭 상세 내용
-========================================================= */
-
-function renderCellModal(
-  index
-) {
-  const cell =
-    state.field[
-      index
-    ];
-
-  const container =
-    document.getElementById(
-      'cell-modal-content'
-    );
-
-  if (!cell) {
-    return;
-  }
-
-  const crop =
-    cell.cropId
-      ? CROPS[
-          cell.cropId
-        ]
-      : null;
-
-  const env =
-    getEnvironment();
-
-  /*
-    빈 밭
-  */
-  if (
-    !crop &&
-    !cell.dead
-  ) {
-    container.innerHTML = `
-      <div class="modal-title-row">
-
-        <div class="modal-crop-icon">
-          🟫
-        </div>
-
-        <div>
-
-          <div class="eyebrow">
-            FIELD ${index + 1}
-          </div>
-
-          <h2 id="modal-title">
-            빈 밭
-          </h2>
-
-          <div class="modal-subtitle">
-            현재 토양 상태를 확인하고
-            씨앗을 심어보세요.
-          </div>
-
-        </div>
-      </div>
-
-      <div class="status-grid">
-
-        ${statusChip(
-          '토양 수분',
-          `${Math.round(
-            cell.moisture
-          )}%`
-        )}
-
-        ${statusChip(
-          '비옥도',
-          `${Math.round(
-            cell.fertility
-          )}%`
-        )}
-
-        ${statusChip(
-          '현재 온도',
-          `${env.temperature.toFixed(
-            1
-          )}°C`
-        )}
-
-      </div>
-
-      <div class="modal-actions">
-
-        ${
-          Object.values(
-            CROPS
-          )
-            .map(
-              c => `
-                <button
-                  class="action-btn primary"
-                  data-plant="${c.id}"
-                >
-                  <span>
-                    ${c.icon}
-                    ${c.name} 심기
-                  </span>
-
-                  <span>
-                    ${
-                      state.inventory
-                        .seeds[
-                        c.id
-                      ] || 0
-                    }개
-                  </span>
-                </button>
-              `
-            )
-            .join('')
-        }
-
-      </div>
-
-      <div class="action-note">
-        씨앗을 구매한 뒤 원하는 작물을 선택하세요.
-        파종 후 환경 조건에 따라 성장 속도가 달라집니다.
-      </div>
-    `;
-
-    container
-      .querySelectorAll(
-        '[data-plant]'
-      )
-      .forEach(
-        btn =>
-          btn.addEventListener(
-            'click',
-            () =>
-              plantCrop(
-                index,
-                btn.dataset
-                  .plant
-              )
-          )
-      );
-
-    return;
-  }
-
-  /*
-    고사한 작물
-  */
-  if (
-    cell.dead
-  ) {
-    container.innerHTML = `
-      <div class="modal-title-row">
-
-        <div class="modal-crop-icon">
-          🥀
-        </div>
-
-        <div>
-
-          <div class="eyebrow">
-            FIELD ${index + 1}
-          </div>
-
-          <h2 id="modal-title">
-            고사한 작물
-          </h2>
-
-          <div class="modal-subtitle">
-            건강도가 0이 되어 더 이상 성장하지 않습니다.
-          </div>
-
-        </div>
-      </div>
-
-      <div class="status-grid">
-
-        ${statusChip(
-          '토양 수분',
-          `${Math.round(
-            cell.moisture
-          )}%`
-        )}
-
-        ${statusChip(
-          '비옥도',
-          `${Math.round(
-            cell.fertility
-          )}%`
-        )}
-
-        ${statusChip(
-          '건강도',
-          '0%'
-        )}
-
-      </div>
-
-      <div class="modal-actions">
-
-        <button
-          class="action-btn danger"
-          id="remove-dead"
-        >
-          <span>
-            🗑 고사작물 정리
-          </span>
-
-          <span>
-            무료
-          </span>
-        </button>
-
-      </div>
-
-      <div class="action-note">
-        고사한 작물을 정리하면
-        해당 밭을 다시 파종할 수 있습니다.
-      </div>
-    `;
-
-    document
-      .getElementById(
-        'remove-dead'
-      )
-      .addEventListener(
-        'click',
-        () =>
-          clearCell(
-            index
-          )
-      );
-
-    return;
-  }
-
-  const stage =
-    getGrowthStage(
-      cell.growth
-    );
-
-  const estimatedQuality =
-    estimateQuality(
-      cell,
-      crop,
-      env
-    );
-
-  const dry =
-    cell.moisture <
-    crop.optimalMoisture[0];
-
-  const overWater =
-    cell.moisture >
-    crop.optimalMoisture[1];
-
-  const canHarvest =
-    cell.growth >=
-    100;
-
-  container.innerHTML = `
-    <div class="modal-title-row">
-
-      <div class="modal-crop-icon">
-        ${crop.icon}
-      </div>
-
-      <div>
-
-        <div class="eyebrow">
-          FIELD ${index + 1}
-        </div>
-
-        <h2 id="modal-title">
-          ${crop.name}
-        </h2>
-
-        <div class="modal-subtitle">
-          ${stage}
-          · 적정 온도
-          ${crop.optimalTemp[0]}~${crop.optimalTemp[1]}°C
-        </div>
-
-      </div>
-    </div>
-
-    <div class="status-grid">
-
-      ${statusChip(
-        '성장도',
-        `${Math.round(
-          cell.growth
-        )}%`
-      )}
-
-      ${statusChip(
-        '건강도',
-        `${Math.round(
-          cell.health
-        )}%`
-      )}
-
-      ${statusChip(
-        '토양 수분',
-        `${Math.round(
-          cell.moisture
-        )}%`
-      )}
-
-      ${statusChip(
-        '비옥도',
-        `${Math.round(
-          cell.fertility
-        )}%`
-      )}
-
-      ${statusChip(
-        '잡초',
-        cell.weed
-          ? '발생'
-          : '없음'
-      )}
-
-      ${statusChip(
-        '병해충',
-        cell.pests
-          ? '발생'
-          : '없음'
-      )}
-
-    </div>
-
-    <div class="modal-actions">
-
-      <button
-        class="action-btn water"
-        data-action="water"
-        ${
-          state.inventory
-            .inputs.water <= 0 ||
-          overWater
-            ? 'disabled'
-            : ''
-        }
-      >
-        <span>
-          💧 물주기
-        </span>
-
-        <span>
-          ${
-            state.inventory
-              .inputs.water
-          }
-        </span>
-      </button>
-
-      <button
-        class="action-btn warn"
-        data-action="weed"
-        ${
-          !cell.weed
-            ? 'disabled'
-            : ''
-        }
-      >
-        <span>
-          🌿 잡초 뽑기
-        </span>
-
-        <span>
-          작업
-        </span>
-      </button>
-
-      <button
-        class="action-btn danger"
-        data-action="pesticide"
-        ${
-          !cell.pests ||
-          state.inventory.inputs.pesticide <= 0
-            ? 'disabled'
-            : ''
-        }
-      >
-        <span>
-          🧴 병해충 방제
-        </span>
-
-        <span>
-          ${
-            state.inventory
-              .inputs.pesticide
-          }
-        </span>
-      </button>
-
-      <button
-        class="action-btn primary"
-        data-action="fertilize"
-        ${
-          state.inventory.inputs.fertilizer <= 0 ||
-          cell.fertilized
-            ? 'disabled'
-            : ''
-        }
-      >
-        <span>
-          ✨ 비료 주기
-        </span>
-
-        <span>
-          ${
-            state.inventory
-              .inputs.fertilizer
-          }
-        </span>
-      </button>
-
-      <button
-        class="action-btn"
-        data-action="harvest"
-        ${
-          !canHarvest
-            ? 'disabled'
-            : ''
-        }
-      >
-        <span>
-          🧺 수확하기
-        </span>
-
-        <span>
-          ${
-            canHarvest
-              ? estimateQuality(
-                  cell,
-                  crop,
-                  env
-                ) +
-                '등급'
-              : '성숙 대기'
-          }
-        </span>
-      </button>
-
-    </div>
-
-    <div class="action-note">
-
-      ${
-        dry
-          ? '토양이 건조합니다. 물주기를 권장합니다. '
-          : ''
-      }
-
-      ${
-        overWater
-          ? '수분이 과다합니다. 뿌리 환경에 불리할 수 있습니다. '
-          : ''
-      }
-
-      현재 예상 품질:
-      <strong>
-        ${estimatedQuality}등급
-      </strong>
-
-      · 비료 사용:
-      ${
-        cell.fertilized
-          ? '예'
-          : '아니오'
-      }
-
-    </div>
-  `;
-
-  container
-    .querySelectorAll(
-      '[data-action]'
-    )
-    .forEach(
-      btn =>
-        btn.addEventListener(
-          'click',
-          () =>
-            handleCellAction(
-              index,
-              btn.dataset
-                .action
-            )
-        )
-    );
-}
-
-
-/* =========================================================
-   상태 칩
-========================================================= */
-
-function statusChip(
-  label,
-  value
-) {
-  return `
-    <div class="status-chip">
-      <span>
-        ${label}
-      </span>
-
-      <strong>
-        ${value}
-      </strong>
-    </div>
-  `;
-}
-
-
-/* =========================================================
-   밭 액션
-========================================================= */
-
-function handleCellAction(
-  index,
-  action
-) {
-  switch (
-    action
-  ) {
-    case 'water':
-      waterCell(index);
-      break;
-
-    case 'weed':
-      weedCell(index);
-      break;
-
-    case 'pesticide':
-      pesticideCell(index);
-      break;
-
-    case 'fertilize':
-      fertilizeCell(index);
-      break;
-
-    case 'harvest':
-      harvestCell(index);
-      break;
-  }
-}
-
-
-/* =========================================================
-   파종
-========================================================= */
-
-function plantCrop(
-  index,
-  cropId
-) {
-  const cell =
-    state.field[
-      index
-    ];
-
-  const crop =
-    CROPS[cropId];
-
-  if (
-    !cell ||
-    cell.cropId ||
-    cell.dead
-  ) {
-    return;
-  }
-
-  if (
-    (
-      state.inventory
-        .seeds[
-        cropId
-      ] || 0
-    ) <= 0
-  ) {
-    showToast(
-      `${crop.name} 씨앗이 부족합니다.`
-    );
-
-    return;
-  }
-
-  state.inventory
-    .seeds[
-      cropId
-    ] -= 1;
-
-  cell.cropId =
-    cropId;
-
-  cell.growth =
-    0.1;
-
-  cell.health =
-    crop.baseHealth;
-
-  cell.plantedAt =
-    state.gameTime;
-
-  cell.lastTickAt =
-    state.gameTime;
-
-  cell.weed =
-    false;
-
-  cell.pests =
-    false;
-
-  cell.fertilized =
-    false;
-
-  cell.dead =
-    false;
-
-  cell.diseasePressure =
-    0;
-
-  cell.qualityScore =
-    crop.baseQuality;
-
-  cell.moisture =
-    clamp(
-      cell.moisture,
-      25,
-      80
-    );
-
-  saveGame(false);
-
-  renderAll();
-
-  showToast(
-    `${crop.icon} ${crop.name}을(를) 파종했습니다.`
-  );
-
-  renderCellModal(
-    index
-  );
-}
-
-
-/* =========================================================
-   물주기
-========================================================= */
-
-function waterCell(
-  index
-) {
-  const cell =
-    state.field[
-      index
-    ];
-
-  if (
-    !cell?.cropId ||
-    cell.dead
-  ) {
-    return;
-  }
-
-  if (
-    state.inventory
-      .inputs.water <=
-    0
-  ) {
-    showToast(
-      '물통이 없습니다. 상점에서 구매하세요.'
-    );
-
-    return;
-  }
-
-  if (
-    cell.moisture >=
-    88
-  ) {
-    showToast(
-      '이미 토양 수분이 높습니다. 과습을 피하세요.'
-    );
-
-    return;
-  }
-
-  state.inventory
-    .inputs.water -=
-    1;
-
-  cell.moisture =
-    clamp(
-      cell.moisture +
-        28,
-      0,
-      100
-    );
-
-  cell.health =
-    clamp(
-      cell.health +
-        2,
-      0,
-      100
-    );
-
-  saveGame(false);
-
-  renderAll();
-
-  showToast(
-    '물을 주었습니다. 토양 수분이 회복되었습니다.'
-  );
-
-  renderCellModal(
-    index
-  );
-}
-
-
-/* =========================================================
-   잡초 제거
-========================================================= */
-
-function weedCell(
-  index
-) {
-  const cell =
-    state.field[
-      index
-    ];
-
-  if (
-    !cell?.weed
-  ) {
-    return;
-  }
-
-  cell.weed =
-    false;
-
-  cell.health =
-    clamp(
-      cell.health +
-        4,
-      0,
-      100
-    );
-
-  cell.fertility =
-    clamp(
-      cell.fertility +
-        1,
-      0,
-      100
-    );
-
-  saveGame(false);
-
-  renderAll();
-
-  showToast(
-    '잡초를 제거했습니다.'
-  );
-
-  renderCellModal(
-    index
-  );
-}
-
-
-/* =========================================================
-   병해충 방제
-========================================================= */
-
-function pesticideCell(
-  index
-) {
-  const cell =
-    state.field[
-      index
-    ];
-
-  if (
-    !cell?.pests
-  ) {
-    return;
-  }
-
-  if (
-    state.inventory
-      .inputs
-      .pesticide <=
-    0
-  ) {
-    showToast(
-      '농약이 없습니다. 상점에서 구매하세요.'
-    );
-
-    return;
-  }
-
-  state.inventory
-    .inputs
-    .pesticide -=
-    1;
-
-  cell.pests =
-    false;
-
-  cell.diseasePressure =
-    Math.max(
-      0,
-      cell.diseasePressure -
-        30
-    );
-
-  cell.health =
-    clamp(
-      cell.health +
-        9,
-      0,
-      100
-    );
-
-  saveGame(false);
-
-  renderAll();
-
-  showToast(
-    '병해충을 방제했습니다.'
-  );
-
-  renderCellModal(
-    index
-  );
-}
-
-
-/* =========================================================
-   비료
-========================================================= */
-
-function fertilizeCell(
-  index
-) {
-  const cell =
-    state.field[
-      index
-    ];
-
-  if (
-    !cell?.cropId ||
-    cell.dead
-  ) {
-    return;
-  }
-
-  if (
-    cell.fertilized
-  ) {
-    showToast(
-      '이미 비료를 준 밭입니다.'
-    );
-
-    return;
-  }
-
-  if (
-    state.inventory
-      .inputs
-      .fertilizer <=
-    0
-  ) {
-    showToast(
-      '비료가 없습니다. 상점에서 구매하세요.'
-    );
-
-    return;
-  }
-
-  state.inventory
-    .inputs
-    .fertilizer -=
-    1;
-
-  cell.fertilized =
-    true;
-
-  cell.fertility =
-    clamp(
-      cell.fertility +
-        22,
-      0,
-      100
-    );
-
-  cell.qualityScore =
-    clamp(
-      cell.qualityScore +
-        8,
-      0,
-      100
-    );
-
-  saveGame(false);
-
-  renderAll();
-
-  showToast(
-    '비료를 주었습니다. 성장과 품질에 도움을 줍니다.'
-  );
-
-  renderCellModal(
-    index
-  );
-}
-
-
-/* =========================================================
-   수확
-========================================================= */
-
-function harvestCell(
-  index
-) {
-  const cell =
-    state.field[
-      index
-    ];
-
-  if (
-    !cell?.cropId ||
-    cell.dead
-  ) {
-    return;
-  }
-
-  if (
-    cell.growth < 100
-  ) {
-    showToast(
-      '아직 성숙하지 않았습니다.'
-    );
-
-    return;
-  }
-
-  const crop =
-    CROPS[
-      cell.cropId
-    ];
-
-  const quality =
-    estimateQuality(
-      cell,
-      crop,
-      getEnvironment()
-    );
-
-  state.inventory
-    .harvest[
-      crop.id
-    ] += 1;
-
-  /*
-    밭 초기화
-  */
-  cell.cropId =
-    null;
-
-  cell.growth =
-    0;
-
-  cell.health =
-    100;
-
-  cell.weed =
-    false;
-
-  cell.pests =
-    false;
-
-  cell.fertilized =
-    false;
-
-  cell.plantedAt =
-    null;
-
-  cell.lastTickAt =
-    null;
-
-  cell.qualityScore =
-    0;
-
-  cell.diseasePressure =
-    0;
-
-  cell.dead =
-    false;
-
-  /*
-    마지막 수확 품질 저장
-  */
-  state._lastHarvestQuality =
-    {
-      cropId:
-        crop.id,
-
-      quality
-    };
-
-  saveGame(false);
-
-  renderAll();
-
-  closeCellModal();
-
-  showToast(
-    `${crop.icon} ${crop.name} 수확 완료 · ${quality}등급`
-  );
-}
-
-
-/* =========================================================
-   고사한 작물 제거
-========================================================= */
-
-function clearCell(
-  index
-) {
-  state.field[
-    index
-  ] =
-    createEmptyCell(
-      index
-    );
-
-  saveGame(false);
-
-  renderAll();
-
-  closeCellModal();
-
-  showToast(
-    '밭을 정리했습니다.'
-  );
-}
-
-
-/* =========================================================
-   품질 계산
-========================================================= */
-
-function estimateQuality(
-  cell,
-  crop,
-  env
-) {
-  const healthScore =
-    cell.health;
-
-  const tempScore =
-    rangeScore(
-      env.temperature,
-      crop.optimalTemp
-    ) * 100;
-
-  const moistureScore =
-    rangeScore(
-      cell.moisture,
-      crop.optimalMoisture
-    ) * 100;
-
-  const sunScore =
-    rangeScore(
-      env.sunPercent,
-      crop.optimalSun
-    ) * 100;
-
-  const threatPenalty =
-    (
-      cell.weed
-        ? 12
-        : 0
-    ) +
-    (
-      cell.pests
-        ? 20
-        : 0
-    ) +
-    cell.diseasePressure *
-      0.15;
-
-  const fertilizerBonus =
-    cell.fertilized
-      ? 10
-      : 0;
-
-  const raw =
-    crop.baseQuality *
-      0.28 +
-    healthScore *
-      0.33 +
-    tempScore *
-      0.12 +
-    moistureScore *
-      0.12 +
-    sunScore *
-      0.08 +
-    cell.fertility *
-      0.07 +
-    fertilizerBonus -
-    threatPenalty;
-
-  const score =
-    clamp(
-      raw,
-      0,
-      100
-    );
-
-  if (
-    score >= 90
-  ) {
-    return 'S';
-  }
-
-  if (
-    score >= 78
-  ) {
-    return 'A';
-  }
-
-  if (
-    score >= 62
-  ) {
-    return 'B';
-  }
-
-  if (
-    score >= 45
-  ) {
-    return 'C';
-  }
-
-  return 'D';
-}
-
-
-/* =========================================================
-   품질별 가격 배율
-========================================================= */
-
-function qualityMultiplier(
-  quality
-) {
-  return (
-    {
-      S: 1.6,
-      A: 1.32,
-      B: 1.08,
-      C: 0.85,
-      D: 0.58
-    }[quality] ||
-    1
-  );
-}
-
-
-/* =========================================================
-   구매
-========================================================= */
-
-function buyItem(
-  itemKey
-) {
-  const [
-    kind,
-    id
-  ] =
-    itemKey.split(
-      ':'
-    );
-
-  /*
-    씨앗
-  */
-  if (
-    kind === 'seed'
-  ) {
-    const crop =
-      CROPS[id];
-
-    if (!crop) {
-      return;
-    }
-
-    if (
-      state.money <
-      crop.seedPrice
-    ) {
-      showToast(
-        '소지금이 부족합니다.'
-      );
-
-      return;
-    }
-
-    state.money -=
-      crop.seedPrice;
-
-    state.inventory
-      .seeds[id] +=
-      1;
-
-    showToast(
-      `${crop.icon} ${crop.name} 씨앗 1개를 구매했습니다.`
-    );
-  }
-
-  /*
-    농자재
-  */
-  else {
-    const item =
-      INPUT_ITEMS[id];
-
-    if (!item) {
-      return;
-    }
-
-    if (
-      state.money <
-      item.buyPrice
-    ) {
-      showToast(
-        '소지금이 부족합니다.'
-      );
-
-      return;
-    }
-
-    state.money -=
-      item.buyPrice;
-
-    state.inventory
-      .inputs[id] +=
-      1;
-
-    showToast(
-      `${item.icon} ${item.name} 1개를 구매했습니다.`
-    );
-  }
-
-  saveGame(false);
-
-  renderAll();
-}
-
-
-/* =========================================================
-   수확물 판매
-========================================================= */
-
-function sellHarvest(
-  cropId
-) {
-  const crop =
-    CROPS[cropId];
-
-  if (
-    !crop ||
-    (
-      state.inventory
-        .harvest[
-        cropId
-      ] || 0
-    ) <= 0
-  ) {
-    return;
-  }
-
-  const quality =
-    state._lastHarvestQuality
-      ?.cropId ===
-      cropId
-      ? state
-          ._lastHarvestQuality
-          .quality
-      : 'B';
-
-  const price =
-    Math.round(
-      crop.sellPrice *
-        qualityMultiplier(
-          quality
-        )
-    );
-
-  state.inventory
-    .harvest[
-      cropId
-    ] -= 1;
-
-  state.money +=
-    price;
-
-  showToast(
-    `${crop.icon} ${crop.name} 1개를 ${formatMoney(
-      price
-    )}에 판매했습니다. (${quality}등급 기준)`
-  );
-
-  state._lastHarvestQuality =
-    null;
-
-  saveGame(false);
-
-  renderAll();
-}
-
-
-/* =========================================================
-   인벤토리
-========================================================= */
-
-function openInventory() {
+  renderShop();
   renderInventory();
-
-  document
-    .getElementById(
-      'inventory-modal'
-    )
-    .classList.remove(
-      'hidden'
-    );
-
-  document
-    .getElementById(
-      'inventory-modal'
-    )
-    .setAttribute(
-      'aria-hidden',
-      'false'
-    );
 }
 
+/* --------------------------------------------------------------------------
+   11. 밭 칸 액션 팝업
+   -------------------------------------------------------------------------- */
 
-function closeInventory() {
-  document
-    .getElementById(
-      'inventory-modal'
-    )
-    .classList.add(
-      'hidden'
-    );
-
-  document
-    .getElementById(
-      'inventory-modal'
-    )
-    .setAttribute(
-      'aria-hidden',
-      'true'
-    );
+function positionPopup(popup, event) {
+  const margin = 12;
+  let x = event ? event.clientX + 14 : window.innerWidth / 2 - 125;
+  let y = event ? event.clientY : window.innerHeight / 2 - 100;
+  const w = 250, h = 320;
+  x = clamp(x, margin, window.innerWidth - w - margin);
+  y = clamp(y, margin, window.innerHeight - h - margin);
+  popup.style.left = x + 'px';
+  popup.style.top = y + 'px';
 }
 
+function buildPopupContent(plotIndex) {
+  const plot = state.field[plotIndex];
 
-function renderInventory() {
-  const wrap =
-    document.getElementById(
-      'inventory-content'
-    );
-
-  const entries =
-    [];
-
-  /*
-    작물 씨앗 / 수확물
-  */
-  Object.values(
-    CROPS
-  ).forEach(
-    crop => {
-      entries.push(
-        {
-          icon: crop.icon,
-
-          name:
-            `${crop.name} 씨앗`,
-
-          count:
-            state.inventory
-              .seeds[
-              crop.id
-            ] || 0
-        }
-      );
-
-      entries.push(
-        {
-          icon: crop.icon,
-
-          name:
-            `${crop.name} 수확물`,
-
-          count:
-            state.inventory
-              .harvest[
-              crop.id
-            ] || 0
-        }
-      );
+  // 잠긴 칸: 개간(확장) 팝업
+  if (!plot) {
+    const isNext = plotIndex === state.unlockedCount;
+    if (!isNext) {
+      return `
+        <div class="popup-title">🔒 미개간지 <button class="popup-close" data-act="close">✕</button></div>
+        <div class="popup-empty-msg">앞 칸부터 순서대로 개간해야 합니다.</div>
+      `;
     }
-  );
-
-  /*
-    농자재
-  */
-  Object.values(
-    INPUT_ITEMS
-  ).forEach(
-    item => {
-      entries.push(
-        {
-          icon: item.icon,
-
-          name:
-            item.name,
-
-          count:
-            state.inventory
-              .inputs[
-              item.id
-            ] || 0
-        }
-      );
-    }
-  );
-
-  wrap.innerHTML =
-    entries.length
-      ? entries
-          .map(
-            item => `
-              <div class="inventory-card">
-
-                <div class="icon">
-                  ${item.icon}
-                </div>
-
-                <div class="name">
-                  ${item.name}
-                </div>
-
-                <div class="count">
-                  ${item.count}개
-                </div>
-
-              </div>
-            `
-          )
-          .join('')
-      : `
-          <div class="inventory-empty">
-            보유 물품이 없습니다.
-          </div>
-        `;
-}
-
-
-/* =========================================================
-   저장
-========================================================= */
-
-function saveGame(
-  showToastMessage = false
-) {
-  state.lastSavedAt =
-    Date.now();
-
-  localStorage.setItem(
-    STORAGE_KEY,
-    JSON.stringify(
-      state
-    )
-  );
-
-  if (
-    showToastMessage
-  ) {
-    showToast(
-      '게임이 저장되었습니다.'
-    );
-  }
-}
-
-
-/* =========================================================
-   불러오기
-========================================================= */
-
-function loadGame() {
-  try {
-    const raw =
-      localStorage.getItem(
-        STORAGE_KEY
-      );
-
-    if (!raw) {
-      return false;
-    }
-
-    const saved =
-      JSON.parse(
-        raw
-      );
-
-    state = {
-      ...createDefaultState(),
-
-      ...saved
-    };
-
-    return true;
+    const cost = computeExpandCost(state.unlockedCount);
+    return `
+      <div class="popup-title">🔒 미개간지 <button class="popup-close" data-act="close">✕</button></div>
+      <div class="popup-stats">이 땅을 개간하면 새 밭 한 칸이 생깁니다.</div>
+      <button class="btn-action btn-expand" data-act="expand" ${state.money < cost ? 'disabled' : ''}>🪓 개간하기 <span class="action-cost">${formatMoney(cost)}</span></button>
+    `;
   }
 
-  catch (error) {
-    console.warn(
-      '저장 데이터를 불러오지 못했습니다.',
-      error
-    );
+  if (!plot.cropId) {
+    const ownedSeeds = Object.entries(state.inventory.seeds).filter(([, c]) => c > 0);
+    const seedButtons = ownedSeeds.length
+      ? ownedSeeds.map(([cropId, count]) => {
+          const crop = CROPS[cropId];
+          return `<button class="btn-action" data-act="plant" data-crop="${cropId}">${crop.emoji} ${crop.name} 파종하기 <span class="action-cost">보유 ${count}</span></button>`;
+        }).join('')
+      : '<div class="popup-empty-msg">보유한 씨앗이 없습니다.<br>상점에서 먼저 구매하세요.</div>';
 
-    state =
-      createDefaultState();
-
-    return false;
+    return `
+      <div class="popup-title">${plotIndex + 1}번 밭 <button class="popup-close" data-act="close">✕</button></div>
+      <div class="popup-stats">
+        <div class="popup-stat-row"><span>토양 수분</span><b>${Math.round(plot.moisture)}%</b></div>
+        <div class="popup-stat-row"><span>토양 비옥도</span><b>${Math.round(plot.fertility)}%</b></div>
+      </div>
+      <div class="popup-seed-list">${seedButtons}</div>
+    `;
   }
+
+  const crop = CROPS[plot.cropId];
+  const progressPct = plot.stage < 4 ? Math.min(100, Math.round((plot.progress / crop.stageDuration) * 100)) : 100;
+
+  return `
+    <div class="popup-title">${crop.emoji} ${crop.name} <button class="popup-close" data-act="close">✕</button></div>
+    <div class="popup-stats">
+      <div class="popup-stat-row"><span>생육 단계</span><b>${STAGE_NAMES[plot.stage]} (${progressPct}%)</b></div>
+      <div class="popup-stat-row"><span>건강도</span><b>${Math.round(plot.health)}%</b></div>
+      <div class="popup-stat-row"><span>토양 수분</span><b>${Math.round(plot.moisture)}%</b></div>
+      <div class="popup-stat-row"><span>토양 비옥도</span><b>${Math.round(plot.fertility)}%</b></div>
+      <div class="popup-stat-row"><span>잡초</span><b>${Math.round(plot.weedLevel)}%</b></div>
+      <div class="popup-stat-row"><span>병해충</span><b class="${plot.hasPest ? 'popup-warn' : ''}">${plot.hasPest ? '발생함!' : '없음'}</b></div>
+    </div>
+    <button class="btn-action" data-act="water">💧 물 주기</button>
+    <button class="btn-action" data-act="weed" ${plot.weedLevel < 5 ? 'disabled' : ''}>🌾 잡초 뽑기</button>
+    <button class="btn-action" data-act="pest" ${!plot.hasPest ? 'disabled' : ''}>🧴 병해충 방제 <span class="action-cost">방제약 ${state.inventory.supplies.pesticide || 0}</span></button>
+    <button class="btn-action" data-act="fert" ${plot.fertilizedUsed || !state.inventory.supplies.fertilizer ? 'disabled' : ''}>🌱 비료 주기 <span class="action-cost">비료 ${state.inventory.supplies.fertilizer || 0}</span></button>
+    <button class="btn-action" data-act="harvest" ${plot.stage < 4 ? 'disabled' : ''}>🧺 수확하기</button>
+  `;
 }
 
-
-/* =========================================================
-   상태 보정
-========================================================= */
-
-function normalizeState() {
-  /*
-    밭 보정
-  */
-  if (
-    !Array.isArray(
-      state.field
-    ) ||
-    state.field.length !==
-      FIELD_SIZE
-  ) {
-    state.field =
-      Array.from(
-        {
-          length:
-            FIELD_SIZE
-        },
-
-        (_, i) =>
-          state.field?.[
-            i
-          ] ||
-          createEmptyCell(
-            i
-          )
-      );
-  }
-
-  state.field =
-    state.field.map(
-      (
-        cell,
-        i
-      ) => ({
-        ...createEmptyCell(
-          i
-        ),
-
-        ...cell,
-
-        id: i
-      })
-    );
-
-  /*
-    인벤토리 보정
-  */
-  state.inventory ||=
-    createDefaultState()
-      .inventory;
-
-  state.inventory.seeds ||=
-    {};
-
-  state.inventory.harvest ||=
-    {};
-
-  state.inventory.inputs ||=
-    {};
-
-  Object.keys(
-    CROPS
-  ).forEach(
-    id => {
-      state.inventory
-        .seeds[id] =
-        Number(
-          state.inventory
-            .seeds[id] ||
-            0
-        );
-
-      state.inventory
-        .harvest[id] =
-        Number(
-          state.inventory
-            .harvest[id] ||
-            0
-        );
-    }
-  );
-
-  Object.keys(
-    INPUT_ITEMS
-  ).forEach(
-    id => {
-      state.inventory
-        .inputs[id] =
-        Number(
-          state.inventory
-            .inputs[id] ||
-            0
-        );
-    }
-  );
-
-  state.money =
-    Number(
-      state.money ||
-        0
-    );
-
-  state.gameTime =
-    Number(
-      state.gameTime ||
-        createDefaultState()
-          .gameTime
-    );
-
-  state.tutorialSeen =
-    Boolean(
-      state.tutorialSeen
-    );
+function openPlotPopup(plotIndex, event) {
+  currentPopupPlotIndex = plotIndex;
+  const popup = document.getElementById('plot-popup');
+  popup.innerHTML = buildPopupContent(plotIndex);
+  popup.classList.remove('hidden');
+  document.getElementById('popup-backdrop').classList.remove('hidden');
+  positionPopup(popup, event);
+  bindPopupButtons(plotIndex);
 }
 
+function refreshPopup() {
+  if (currentPopupPlotIndex === null) return;
+  const popup = document.getElementById('plot-popup');
+  if (popup.classList.contains('hidden')) { currentPopupPlotIndex = null; return; }
+  popup.innerHTML = buildPopupContent(currentPopupPlotIndex);
+  bindPopupButtons(currentPopupPlotIndex);
+}
 
-/* =========================================================
-   새 게임
-========================================================= */
+function bindPopupButtons(plotIndex) {
+  const popup = document.getElementById('plot-popup');
+  popup.querySelectorAll('[data-act]').forEach((btn) => {
+    const act = btn.dataset.act;
+    btn.addEventListener('click', () => {
+      if (act === 'close') return closePopup();
+      if (act === 'expand') return expandField();
+      if (act === 'plant') return plantSeed(plotIndex, btn.dataset.crop);
+      if (act === 'water') return waterPlotAndRefresh(plotIndex);
+      if (act === 'weed') return removeWeedsAndRefresh(plotIndex);
+      if (act === 'pest') return treatPestAndRefresh(plotIndex);
+      if (act === 'fert') return fertilizePlotAndRefresh(plotIndex);
+      if (act === 'harvest') return harvestPlot(plotIndex);
+    });
+  });
+}
 
-function resetGame() {
-  const ok =
-    window.confirm(
-      '현재 저장 데이터를 모두 지우고 새 게임을 시작할까요?'
-    );
+function waterPlotAndRefresh(i) { waterPlot(i); refreshPopup(); }
+function removeWeedsAndRefresh(i) { removeWeeds(i); refreshPopup(); }
+function treatPestAndRefresh(i) { treatPest(i); refreshPopup(); }
+function fertilizePlotAndRefresh(i) { fertilizePlot(i); refreshPopup(); }
 
-  if (!ok) {
-    return;
-  }
+function closePopup() {
+  currentPopupPlotIndex = null;
+  document.getElementById('plot-popup').classList.add('hidden');
+  document.getElementById('popup-backdrop').classList.add('hidden');
+}
 
-  localStorage.removeItem(
-    STORAGE_KEY
-  );
+/* --------------------------------------------------------------------------
+   12. 토스트 알림
+   -------------------------------------------------------------------------- */
 
-  state =
-    createDefaultState();
+function showToast(message, type) {
+  const container = document.getElementById('toast-container');
+  const toast = document.createElement('div');
+  toast.className = 'toast' + (type === 'bad' ? ' toast-bad' : type === 'good' ? ' toast-good' : type === 'level' ? ' toast-level' : '');
+  toast.textContent = message;
+  container.appendChild(toast);
+  setTimeout(() => toast.remove(), 3100);
+}
 
-  updateWeather(true);
+/* --------------------------------------------------------------------------
+   13. 탭 전환 / 초기화
+   -------------------------------------------------------------------------- */
 
-  selectedCellIndex =
-    null;
+function setupTabs() {
+  document.querySelectorAll('.tab-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      activeTab = btn.dataset.tab;
+      document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b === btn));
+      document.querySelectorAll('.tab-content').forEach((c) => c.classList.toggle('active', c.id === `tab-${activeTab}`));
+    });
+  });
+}
 
-  closeCellModal();
+function init() {
+  const hadSave = !!localStorage.getItem(SAVE_KEY);
+  state = loadState();
+  if (!hadSave) rollWeather(); // 새 게임일 때만 초기 날씨를 무작위로 굴린다
 
-  closeInventory();
+  setupTabs();
+  document.getElementById('btn-save').addEventListener('click', () => { saveState(); showToast('저장했습니다.', 'good'); });
+  document.getElementById('btn-reset').addEventListener('click', resetGame);
+  document.getElementById('btn-bulk-water').addEventListener('click', bulkWaterAll);
+  document.getElementById('popup-backdrop').addEventListener('click', closePopup);
+
+  window.addEventListener('beforeunload', saveState);
 
   renderAll();
-
-  showToast(
-    '새 게임을 시작했습니다.'
-  );
-
-  setTimeout(
-    () =>
-      openTutorial(
-        true
-      ),
-    180
-  );
+  setInterval(gameTick, TICK_MS);
 }
 
-
-/* =========================================================
-   성장 단계
-========================================================= */
-
-function getGrowthStage(
-  growth
-) {
-  if (
-    growth <=
-    0.1
-  ) {
-    return '씨앗';
-  }
-
-  if (
-    growth < 25
-  ) {
-    return '새싹';
-  }
-
-  if (
-    growth < 60
-  ) {
-    return '성장';
-  }
-
-  if (
-    growth < 100
-  ) {
-    return '성숙';
-  }
-
-  return '수확';
-}
-
-
-/* =========================================================
-   범위 점수
-========================================================= */
-
-function rangeScore(
-  value,
-  range
-) {
-  const [
-    min,
-    max
-  ] =
-    range;
-
-  /*
-    적정 범위
-  */
-  if (
-    value >= min &&
-    value <= max
-  ) {
-    return 1;
-  }
-
-  /*
-    낮은 경우
-  */
-  if (
-    value < min
-  ) {
-    return clamp(
-      1 -
-        (
-          min -
-          value
-        ) /
-          Math.max(
-            1,
-            min + 5
-          ),
-      0,
-      1
-    );
-  }
-
-  /*
-    높은 경우
-  */
-  return clamp(
-    1 -
-      (
-        value -
-        max
-      ) /
-        Math.max(
-          1,
-          100 -
-            max +
-            5
-        ),
-    0,
-    1
-  );
-}
-
-
-/* =========================================================
-   Clamp
-========================================================= */
-
-function clamp(
-  value,
-  min,
-  max
-) {
-  return Math.min(
-    max,
-    Math.max(
-      min,
-      value
-    )
-  );
-}
-
-
-/* =========================================================
-   돈 표시
-========================================================= */
-
-function formatMoney(
-  value
-) {
-  return `₩${Math.round(
-    value
-  ).toLocaleString(
-    'ko-KR'
-  )}`;
-}
-
-
-/* =========================================================
-   시간 표시
-========================================================= */
-
-function formatTime(
-  date
-) {
-  return `${String(
-    date.getHours()
-  ).padStart(
-    2,
-    '0'
-  )}:${String(
-    date.getMinutes()
-  ).padStart(
-    2,
-    '0'
-  )}`;
-}
-
-
-/* =========================================================
-   튜토리얼 열기
-========================================================= */
-
-function openTutorial(
-  isNewGame = false
-) {
-  tutorialStep =
-    0;
-
-  const modal =
-    document.getElementById(
-      'tutorial-modal'
-    );
-
-  modal.classList.remove(
-    'hidden'
-  );
-
-  modal.setAttribute(
-    'aria-hidden',
-    'false'
-  );
-
-  modal.dataset.newGame =
-    isNewGame
-      ? 'true'
-      : 'false';
-
-  renderTutorial();
-}
-
-
-/* =========================================================
-   튜토리얼 렌더
-========================================================= */
-
-function renderTutorial() {
-  const step =
-    TUTORIAL_STEPS[
-      tutorialStep
-    ];
-
-  if (!step) {
-    return;
-  }
-
-  document.getElementById(
-    'tutorial-icon'
-  ).textContent =
-    step.icon;
-
-  document.getElementById(
-    'tutorial-kicker'
-  ).textContent =
-    step.kicker;
-
-  document.getElementById(
-    'tutorial-title'
-  ).textContent =
-    step.title;
-
-  document.getElementById(
-    'tutorial-description'
-  ).textContent =
-    step.description;
-
-  document.getElementById(
-    'tutorial-body'
-  ).innerHTML =
-    step.body;
-
-  document.getElementById(
-    'tutorial-progress'
-  ).innerHTML =
-    TUTORIAL_STEPS
-      .map(
-        (
-          _,
-          i
-        ) =>
-          `
-            <span
-              class="tutorial-progress-dot ${
-                i <=
-                tutorialStep
-                  ? 'active'
-                  : ''
-              }"
-            ></span>
-          `
-      )
-      .join('');
-
-  const prev =
-    document.getElementById(
-      'tutorial-prev'
-    );
-
-  const next =
-    document.getElementById(
-      'tutorial-next'
-    );
-
-  prev.disabled =
-    tutorialStep ===
-    0;
-
-  prev.style.opacity =
-    tutorialStep ===
-    0
-      ? '0.45'
-      : '1';
-
-  prev.style.cursor =
-    tutorialStep ===
-    0
-      ? 'not-allowed'
-      : 'pointer';
-
-  next.textContent =
-    tutorialStep ===
-    TUTORIAL_STEPS.length -
-      1
-      ? '농장 시작하기'
-      : '다음';
-}
-
-
-/* =========================================================
-   튜토리얼 이전
-========================================================= */
-
-function tutorialPrev() {
-  if (
-    tutorialStep <=
-    0
-  ) {
-    return;
-  }
-
-  tutorialStep -=
-    1;
-
-  renderTutorial();
-}
-
-
-/* =========================================================
-   튜토리얼 다음
-========================================================= */
-
-function tutorialNext() {
-  if (
-    tutorialStep >=
-    TUTORIAL_STEPS.length -
-      1
-  ) {
-    finishTutorial();
-
-    return;
-  }
-
-  tutorialStep +=
-    1;
-
-  renderTutorial();
-}
-
-
-/* =========================================================
-   튜토리얼 종료
-========================================================= */
-
-function finishTutorial() {
-  const modal =
-    document.getElementById(
-      'tutorial-modal'
-    );
-
-  modal.classList.add(
-    'hidden'
-  );
-
-  modal.setAttribute(
-    'aria-hidden',
-    'true'
-  );
-
-  state.tutorialSeen =
-    true;
-
-  saveGame(false);
-}
-
-
-/* =========================================================
-   토스트
-========================================================= */
-
-function showToast(
-  message
-) {
-  const toast =
-    document.getElementById(
-      'toast'
-    );
-
-  toast.textContent =
-    message;
-
-  toast.classList.add(
-    'show'
-  );
-
-  clearTimeout(
-    toastTimer
-  );
-
-  toastTimer =
-    setTimeout(
-      () =>
-        toast.classList.remove(
-          'show'
-        ),
-      2200
-    );
-}
-
-
-/* =========================================================
-   시작
-========================================================= */
-
-init();
+document.addEventListener('DOMContentLoaded', init);
